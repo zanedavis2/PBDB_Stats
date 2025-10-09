@@ -108,25 +108,34 @@ def _safe_div(num, den) -> pd.Series:
 def _apply_display_formatting(df: pd.DataFrame, tab_name: str):
     """
     Returns (df_for_display, column_config) where:
-      - Hitting: AVG/OBP/SLG/OPS/BABIP shown to 3 decimals
-      - Any col ending with '%' shown as a percentage (one decimal place)
-    We DO NOT mutate the original df.
+      • Percent cols (names ending with '%') display as percentages.
+      • Hitting: AVG/OBP/SLG/OPS/BABIP show with 3 decimals, no leading zero (e.g., '.150').
     """
     df_disp = df.copy()
     col_config = {}
 
-    # --- Percent columns: convert 0..1 → 0..100, then show as "xx.x%"
+    # Percent columns: keep numeric, render as xx.x%
     pct_cols = [c for c in df_disp.columns if isinstance(c, str) and c.endswith("%")]
     for c in pct_cols:
         df_disp[c] = _to_num(df_disp[c]) * 100.0
         col_config[c] = st.column_config.NumberColumn(format="%.1f%%")
 
-    # --- Hitting: 3-decimal numeric columns
     if tab_name == "Hitting":
-        three_dec_cols = [c for c in ["AVG", "OBP", "SLG", "OPS", "BABIP"] if c in df_disp.columns]
-        for c in three_dec_cols:
-            df_disp[c] = _to_num(df_disp[c]).round(3)
-            col_config[c] = st.column_config.NumberColumn(format="%.3f")
+        # Format with leading dot (drop leading zero), 3 decimals
+        def _dot3(x):
+            if pd.isna(x):
+                return ""
+            try:
+                s = f"{float(x):.3f}"
+            except Exception:
+                return ""
+            # remove ONLY a single leading '0' (so '1.050' stays '1.050', '0.125' -> '.125')
+            return s[1:] if s.startswith("0") else s
+
+        dot_cols = [c for c in ["AVG", "OBP", "SLG", "OPS", "BABIP"] if c in df_disp.columns]
+        for c in dot_cols:
+            df_disp[c] = _to_num(df_disp[c]).apply(_dot3)
+            col_config[c] = st.column_config.TextColumn()
 
     return df_disp, col_config
 
