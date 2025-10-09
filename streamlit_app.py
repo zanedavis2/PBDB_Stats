@@ -105,6 +105,16 @@ def _safe_div(num, den) -> pd.Series:
     # Both scalars
     return pd.Series(0.0 if float(den) == 0.0 else float(num) / float(den))
 
+def _pitching_ip_gt_zero(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Return only rows with IP > 0.0 using baseball-tenths → decimal conversion.
+    If IP column is missing or df is empty, return df unchanged.
+    """
+    if df.empty or "IP" not in df.columns:
+        return df
+    ip_dec = pd.to_numeric(df["IP"].apply(_convert_innings_value), errors="coerce").fillna(0.0)
+    return df[ip_dec > 0.0].reset_index(drop=True)
+
 def filter_qualified_frames(frames: dict, mins: dict) -> dict:
     """
     Keep only players who meet per-stat-type minimums.
@@ -549,24 +559,31 @@ for tab_name, tab in zip(tabs_to_show, tabs):
             st.info(f"No data for **{tab_name}** with current filters.")
             continue
 
-        # Apply player filter first
+        # 1) Apply player filter first (works the same in cumulative & series)
         df_filtered = filter_players(df, selected_players)
 
-        # If specific players are selected AND we're on Pitching,
-        # require > 0 IP (after converting baseball-tenths to decimal)
-        if selected_players and tab_name == "Pitching" and "IP" in df_filtered.columns:
-            ip_dec = df_filtered["IP"].apply(_convert_innings_value)
-            ip_dec = pd.to_numeric(ip_dec, errors="coerce").fillna(0.0)
-            df_filtered = df_filtered[ip_dec > 0.0].reset_index(drop=True)
+        # 2) If filtering specific players AND we're on Pitching, require > 0 IP
+        if selected_players and tab_name == "Pitching":
+            df_before = len(df_filtered)
+            df_filtered = _pitching_ip_gt_zero(df_filtered)
+            if df_filtered.empty:
+                # Helpful message in both modes
+                st.warning(
+                    "No **Pitching** rows match selected player(s) with > 0 IP."
+                    if df_before > 0 else
+                    "No **Pitching** rows match selected player(s)."
+                )
+                continue
 
-        # Guardrails
+        # 3) Guardrails
         if df_filtered.empty:
             if selected_players:
-                st.warning(f"No **{tab_name}** rows match selected player(s) with > 0 IP requirement." if tab_name == "Pitching"
-                           else f"No **{tab_name}** rows match selected player(s).")
+                st.warning(f"No **{tab_name}** rows match selected player(s).")
             else:
                 st.info(f"No data for **{tab_name}** with current filters.")
             continue
+
+        
         st.subheader(f"{tab_name} Stats")
         st.dataframe(df_filtered, use_container_width=True, hide_index=True)
 
