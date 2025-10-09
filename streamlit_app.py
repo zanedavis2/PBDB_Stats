@@ -34,6 +34,30 @@ PITCHING_KEY = pd.DataFrame({
                  "Stolen Base %","Fielding Independent Pitching"]
 })
 
+FIELDING_KEY = pd.DataFrame({
+    "Acronym": ["TC", "A", "PO", "E", "DP", "FPCT", "Plays Made"],
+    "Meaning": [
+        "Total Chances",
+        "Assists",
+        "Putouts",
+        "Errors",
+        "Double Plays",
+        "Fielding Percentage"
+    ]
+})
+
+CATCHING_KEY = pd.DataFrame({
+    "Acronym": ["INN", "PB", "SB-ATT", "CS", "CS%"],
+    "Meaning": [
+        "Innings Caught",
+        "Passed Balls",
+        "Stolen Base Attempts Against",
+        "Runners Caught Stealing",
+        "Caught Stealing Percentage"
+    ]
+})
+
+
 # ------------------------
 # General Helper Functions
 # ------------------------
@@ -486,9 +510,13 @@ for tab_name, tab in zip(tabs_to_show, tabs):
         st.dataframe(df_filtered, use_container_width=True, hide_index=True)
 
         # Acronym keys for Hitting & Pitching
-        if tab_name in {"Hitting", "Pitching"}:
+        if tab_name in {"Hitting", "Pitching", "Fielding", "Catching"}:
             with st.expander(f"{tab_name} Acronym Key", expanded=False):
                 if tab_name == "Hitting":
                     st.dataframe(HITTING_KEY, use_container_width=True, hide_index=True)
+                if tab_name == "Fielding":
+                    st.dataframe(FIELDING_KEY, use_container_width=True, hide_index=True)
+                if tab_name == "CATCHING":
+                    st.dataframe(CATCHING_KEY, use_container_width=True, hide_index=True)
                 else:
                     st.dataframe(PITCHING_KEY, use_container_width=True, hide_index=True)
