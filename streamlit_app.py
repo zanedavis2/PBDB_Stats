@@ -428,7 +428,7 @@ def aggregate_stats_fielding(series_names):
 # ---------------------------
 # Catching Prep & Aggregate
 # ---------------------------
-CAT_INPUT_COLS = ["Last","First","INN","PB","SB-ATT","CS","CS%","SB","ERA"]
+CAT_INPUT_COLS = ["Last","First","INN","PB","SB-ATT","CS","CS%"]
 
 def prepare_catching_stats(df: pd.DataFrame) -> pd.DataFrame:
     df = clean_df(df)
@@ -441,7 +441,7 @@ def prepare_catching_stats(df: pd.DataFrame) -> pd.DataFrame:
     if "CS%" not in df.columns and {"SB-ATT","CS"}.issubset(df.columns):
         df["CS%"] = _safe_div(_col(df, "CS"), _col(df, "SB-ATT")).round(3)
 
-    display_cols = ["Last","First","INN","PB","SB-ATT","CS","CS%","SB","ERA"]
+    display_cols = ["Last","First","INN","PB","SB-ATT","CS","CS%"]
     existing = [c for c in display_cols if c in df.columns]
     return df[existing].copy()
 
