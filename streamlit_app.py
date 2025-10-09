@@ -105,6 +105,31 @@ def _safe_div(num, den) -> pd.Series:
     # Both scalars
     return pd.Series(0.0 if float(den) == 0.0 else float(num) / float(den))
 
+def _apply_display_formatting(df: pd.DataFrame, tab_name: str):
+    """
+    Returns (df_for_display, column_config) where:
+      - Hitting: AVG/OBP/SLG/OPS/BABIP shown to 3 decimals
+      - Any col ending with '%' shown as a percentage (one decimal place)
+    We DO NOT mutate the original df.
+    """
+    df_disp = df.copy()
+    col_config = {}
+
+    # --- Percent columns: convert 0..1 → 0..100, then show as "xx.x%"
+    pct_cols = [c for c in df_disp.columns if isinstance(c, str) and c.endswith("%")]
+    for c in pct_cols:
+        df_disp[c] = _to_num(df_disp[c]) * 100.0
+        col_config[c] = st.column_config.NumberColumn(format="%.1f%%")
+
+    # --- Hitting: 3-decimal numeric columns
+    if tab_name == "Hitting":
+        three_dec_cols = [c for c in ["AVG", "OBP", "SLG", "OPS", "BABIP"] if c in df_disp.columns]
+        for c in three_dec_cols:
+            df_disp[c] = _to_num(df_disp[c]).round(3)
+            col_config[c] = st.column_config.NumberColumn(format="%.3f")
+
+    return df_disp, col_config
+
 def _pitching_ip_gt_zero(df: pd.DataFrame) -> pd.DataFrame:
     """
     Return only rows with IP > 0.0 using baseball-tenths → decimal conversion.
@@ -567,7 +592,6 @@ for tab_name, tab in zip(tabs_to_show, tabs):
             df_before = len(df_filtered)
             df_filtered = _pitching_ip_gt_zero(df_filtered)
             if df_filtered.empty:
-                # Helpful message in both modes
                 st.warning(
                     "No **Pitching** rows match selected player(s) with > 0 IP."
                     if df_before > 0 else
@@ -583,18 +607,27 @@ for tab_name, tab in zip(tabs_to_show, tabs):
                 st.info(f"No data for **{tab_name}** with current filters.")
             continue
 
-        
-        st.subheader(f"{tab_name} Stats")
-        st.dataframe(df_filtered, use_container_width=True, hide_index=True)
+        # 4) Apply display formatting (percent + 3-decimal hitting metrics)
+        df_display, column_config = _apply_display_formatting(df_filtered, tab_name)
 
-        # Acronym keys for Hitting & Pitching
-        if tab_name in {"Hitting", "Pitching", "Fielding", "Catching"}:
-            with st.expander(f"{tab_name} Acronym Key", expanded=False):
-                if tab_name == "Hitting":
-                    st.dataframe(HITTING_KEY, use_container_width=True, hide_index=True)
-                if tab_name == "Fielding":
-                    st.dataframe(FIELDING_KEY, use_container_width=True, hide_index=True)
-                if tab_name == "CATCHING":
-                    st.dataframe(CATCHING_KEY, use_container_width=True, hide_index=True)
-                if tab_name == "PITCHING":
-                    st.dataframe(PITCHING_KEY, use_container_width=True, hide_index=True)
+        st.subheader(f"{tab_name} Stats")
+        st.dataframe(
+            df_display,
+            use_container_width=True,
+            hide_index=True,
+            column_config=column_config  # 👈 formatting rules applied here
+        )
+
+        # 5) Acronym keys (fixing the tab-name checks)
+        if tab_name == "Hitting":
+            with st.expander("Hitting Acronym Key", expanded=False):
+                st.dataframe(HITTING_KEY, use_container_width=True, hide_index=True)
+        elif tab_name == "Pitching":
+            with st.expander("Pitching Acronym Key", expanded=False):
+                st.dataframe(PITCHING_KEY, use_container_width=True, hide_index=True)
+        elif tab_name == "Fielding":
+            with st.expander("Fielding Acronym Key", expanded=False):
+                st.dataframe(FIELDING_KEY, use_container_width=True, hide_index=True)
+        elif tab_name == "Catching":
+            with st.expander("Catching Acronym Key", expanded=False):
+                st.dataframe(CATCHING_KEY, use_container_width=True, hide_index=True)
