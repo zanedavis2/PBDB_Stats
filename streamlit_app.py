@@ -110,34 +110,40 @@ def filter_qualified_frames(frames: dict, mins: dict) -> dict:
     Keep only players who meet per-stat-type minimums.
     mins: {"Hitting": int, "Pitching": int, "Fielding": int, "Catching": int}
     Uses PA (Hitting), BF (Pitching), TC (Fielding), INN (Catching).
-    If a required column is missing, that frame is left unchanged.
+    Coerces columns to numeric before filtering.
     """
     out = {}
-    # Hitting → PA ≥ min
+
+    # --- Hitting → PA ≥ min ---
     df = frames.get("Hitting", pd.DataFrame()).copy()
     if not df.empty and "PA" in df.columns:
-        out["Hitting"] = df[df["PA"] >= mins.get("Hitting", 1)].reset_index(drop=True)
+        pa = pd.to_numeric(df["PA"], errors="coerce").fillna(0)
+        out["Hitting"] = df[pa >= int(mins.get("Hitting", 1))].reset_index(drop=True)
     else:
         out["Hitting"] = df
 
-    # Pitching → BF ≥ min
+    # --- Pitching → BF ≥ min ---
     df = frames.get("Pitching", pd.DataFrame()).copy()
     if not df.empty and "BF" in df.columns:
-        out["Pitching"] = df[df["BF"] >= mins.get("Pitching", 1)].reset_index(drop=True)
+        bf = pd.to_numeric(df["BF"], errors="coerce").fillna(0)
+        out["Pitching"] = df[bf >= int(mins.get("Pitching", 1))].reset_index(drop=True)
     else:
         out["Pitching"] = df
 
-    # Fielding → TC ≥ min
+    # --- Fielding → TC ≥ min ---
     df = frames.get("Fielding", pd.DataFrame()).copy()
     if not df.empty and "TC" in df.columns:
-        out["Fielding"] = df[df["TC"] >= mins.get("Fielding", 1)].reset_index(drop=True)
+        tc = pd.to_numeric(df["TC"], errors="coerce").fillna(0)
+        out["Fielding"] = df[tc >= int(mins.get("Fielding", 1))].reset_index(drop=True)
     else:
         out["Fielding"] = df
 
-    # Catching → INN ≥ min
+    # --- Catching → INN ≥ min ---
     df = frames.get("Catching", pd.DataFrame()).copy()
     if not df.empty and "INN" in df.columns:
-        out["Catching"] = df[df["INN"] >= mins.get("Catching", 1)].reset_index(drop=True)
+        # If your INN ever arrives in baseball-tenths format (e.g., "4.2"), this still coerces to float.
+        inn = pd.to_numeric(df["INN"], errors="coerce").fillna(0)
+        out["Catching"] = df[inn >= float(mins.get("Catching", 1))].reset_index(drop=True)
     else:
         out["Catching"] = df
 
