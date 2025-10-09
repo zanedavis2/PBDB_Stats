@@ -542,9 +542,6 @@ selected_players = st.multiselect(
 tabs_to_show = stat_types if stat_types else STAT_TYPES_ALL
 tabs = st.tabs(tabs_to_show)
 
-tabs_to_show = stat_types if stat_types else STAT_TYPES_ALL
-tabs = st.tabs(tabs_to_show)
-
 for tab_name, tab in zip(tabs_to_show, tabs):
     with tab:
         df = frames.get(tab_name, pd.DataFrame())
