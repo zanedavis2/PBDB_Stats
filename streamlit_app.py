@@ -497,7 +497,7 @@ def extract_all_players(frames_dict):
 # =========
 st.set_page_config(page_title="EUCB Team Stats (Fall 2025)", layout="wide")
 
-st.title("PBDB Team Stats")
+st.title("EUCB Team Stats (Fall 2025)")
 st.caption("Default view: **Cumulative** stats for **All Players** across **all four stat types**.")
 
 with st.sidebar:
