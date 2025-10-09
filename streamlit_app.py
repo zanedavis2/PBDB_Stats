@@ -9,6 +9,7 @@ import streamlit as st
 # UI Constants
 # -------------
 STAT_TYPES_ALL = ["Hitting", "Pitching", "Fielding", "Catching"]
+QUAL_MINS = {"Hitting": 1, "Pitching": 1, "Fielding": 1, "Catching": 1}
 
 HITTING_KEY = pd.DataFrame({
     "Acronym": ["PA","AB","H","AVG","OBP","SLG","OPS","RBI","R","BB","SO","XBH","2B","3B","HR","TB","SB",
@@ -514,7 +515,7 @@ with st.sidebar:
 # ====================
 if data_source == "Cumulative (default)":
     frames = load_cumulative()
-    frames = filter_qualified_frames(frames, mins)
+    frames = filter_qualified_frames(frames, QUAL_MINS)  # always apply in default view
 else:
     if not selected_series:
         st.warning("Select at least one series to view stats.")
