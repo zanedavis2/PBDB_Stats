@@ -35,7 +35,7 @@ PITCHING_KEY = pd.DataFrame({
 })
 
 FIELDING_KEY = pd.DataFrame({
-    "Acronym": ["TC", "A", "PO", "E", "DP", "FPCT", "Plays Made"],
+    "Acronym": ["TC", "A", "PO", "E", "DP", "FPCT"],
     "Meaning": [
         "Total Chances",
         "Assists",
