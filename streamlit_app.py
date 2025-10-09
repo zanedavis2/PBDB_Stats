@@ -518,5 +518,5 @@ for tab_name, tab in zip(tabs_to_show, tabs):
                     st.dataframe(FIELDING_KEY, use_container_width=True, hide_index=True)
                 if tab_name == "CATCHING":
                     st.dataframe(CATCHING_KEY, use_container_width=True, hide_index=True)
-                else:
+                if tab_name == "PITCHING":
                     st.dataframe(PITCHING_KEY, use_container_width=True, hide_index=True)
