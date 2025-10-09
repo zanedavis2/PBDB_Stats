@@ -514,8 +514,7 @@ with st.sidebar:
 # ====================
 if data_source == "Cumulative (default)":
     frames = load_cumulative()
-    if only_qualified:
-        frames = filter_qualified_frames(frames, mins)
+    frames = filter_qualified_frames(frames, mins)
 else:
     if not selected_series:
         st.warning("Select at least one series to view stats.")
