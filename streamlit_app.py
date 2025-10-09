@@ -38,8 +38,23 @@ PITCHING_KEY = pd.DataFrame({
 # General Helper Functions
 # ------------------------
 def _to_num(s):
-    """Numeric with NaN->0 (keeps floats)."""
-    return pd.to_numeric(s, errors="coerce").fillna(0.0)
+    """Numeric with NaN->0 (works for scalars, Series, or DataFrames)."""
+    import pandas as pd
+    import numpy as np
+
+    # DataFrame: convert each column
+    if isinstance(s, pd.DataFrame):
+        return s.apply(pd.to_numeric, errors="coerce").fillna(0.0)
+
+    # Series or 1-D array-like
+    if isinstance(s, pd.Series):
+        return pd.to_numeric(s, errors="coerce").fillna(0.0)
+
+    # Scalars (or anything else): best effort
+    try:
+        return float(s)
+    except Exception:
+        return 0.0
 
 def _safe_div(num, den):
     num = _to_num(num)
@@ -68,16 +83,18 @@ def _convert_innings_value(ip):
         return np.nan
 
 def clean_df(df: pd.DataFrame) -> pd.DataFrame:
-    """Standardize name columns, trim whitespace, strip suffixes like .1, ensure numeric where possible."""
     df = df.copy()
     df.columns = [str(c).replace(".1", "").strip() for c in df.columns]
+
+    # 👇 Keep the first occurrence of any duplicate column name
+    df = df.loc[:, ~pd.Index(df.columns).duplicated(keep="first")]
+
     if "Last" not in df.columns:
         df["Last"] = ""
     if "First" not in df.columns:
         df["First"] = ""
     df["Last"] = df["Last"].astype(str).str.strip().str.title()
     df["First"] = df["First"].astype(str).str.strip().str.title()
-    # Don't force every column numeric; downstream functions coerce explicitly.
     return df
 
 # -------------------------
