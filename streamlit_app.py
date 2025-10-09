@@ -58,17 +58,6 @@ CATCHING_KEY = pd.DataFrame({
     ]
 })
 
-# Pretty labels (optional—edit as you like)
-SERIES_LABELS = {
-    "wake": "Wake Forest",
-    "jmu": "James Madison",
-}
-def series_label(name: str) -> str:
-    return SERIES_LABELS.get(name, name.replace("_", " ").title())
-
-# Default qualification thresholds for cumulative view
-QUAL_MINS = {"Hitting": 1, "Pitching": 1, "Fielding": 1, "Catching": 1}
-
 
 # ------------------------
 # General Helper Functions
@@ -115,6 +104,62 @@ def _safe_div(num, den) -> pd.Series:
 
     # Both scalars
     return pd.Series(0.0 if float(den) == 0.0 else float(num) / float(den))
+
+def _pitching_ip_gt_zero(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Return only rows with IP > 0.0 using baseball-tenths → decimal conversion.
+    If IP column is missing or df is empty, return df unchanged.
+    """
+    if df.empty or "IP" not in df.columns:
+        return df
+    ip_dec = pd.to_numeric(df["IP"].apply(_convert_innings_value), errors="coerce").fillna(0.0)
+    return df[ip_dec > 0.0].reset_index(drop=True)
+
+def filter_qualified_frames(frames: dict, mins: dict) -> dict:
+    """
+    Keep only players who meet per-stat-type minimums.
+    mins: {"Hitting": int, "Pitching": int, "Fielding": int, "Catching": int}
+    Uses PA (Hitting), BF (Pitching), TC (Fielding), INN (Catching).
+    Coerces columns to numeric before filtering.
+    """
+    out = {}
+
+    # --- Hitting → PA ≥ min ---
+    df = frames.get("Hitting", pd.DataFrame()).copy()
+    if not df.empty and "PA" in df.columns:
+        pa = pd.to_numeric(df["PA"], errors="coerce").fillna(0)
+        out["Hitting"] = df[pa >= int(mins.get("Hitting", 1))].reset_index(drop=True)
+    else:
+        out["Hitting"] = df
+
+    # --- Pitching → BF ≥ min ---
+    df = frames.get("Pitching", pd.DataFrame()).copy()
+    if not df.empty and "BF" in df.columns:
+        bf = pd.to_numeric(df["BF"], errors="coerce").fillna(0)
+        out["Pitching"] = df[bf >= int(mins.get("Pitching", 1))].reset_index(drop=True)
+    else:
+        out["Pitching"] = df
+
+    # --- Fielding → TC ≥ min ---
+    df = frames.get("Fielding", pd.DataFrame()).copy()
+    if not df.empty and "TC" in df.columns:
+        tc = pd.to_numeric(df["TC"], errors="coerce").fillna(0)
+        out["Fielding"] = df[tc >= int(mins.get("Fielding", 1))].reset_index(drop=True)
+    else:
+        out["Fielding"] = df
+
+    # --- Catching → INN ≥ min ---
+    df = frames.get("Catching", pd.DataFrame()).copy()
+    if not df.empty and "INN" in df.columns:
+        # If your INN ever arrives in baseball-tenths format (e.g., "4.2"), this still coerces to float.
+        inn = pd.to_numeric(df["INN"], errors="coerce").fillna(0)
+        out["Catching"] = df[inn >= float(mins.get("Catching", 1))].reset_index(drop=True)
+    else:
+        out["Catching"] = df
+
+    return out
+
+
 
 def _convert_innings_value(ip):
     """
@@ -229,15 +274,14 @@ def aggregate_stats_hitting(series_names):
         file = f"{name}.csv"
         if not os.path.exists(file):
             continue
-        df = _read_csv_flex(file)
+        df = pd.read_csv(file, header=1)
         dfs.append(df)
     if not dfs:
         return pd.DataFrame(columns=HIT_INPUT_COLS)
     combined = pd.concat(dfs, ignore_index=True)
     combined = clean_df(combined)
-    # Extract only the hitting slice
-    hit_df = _extract_stat_df(combined, "Hitting")
-    return hit_df
+    keep = [c for c in HIT_INPUT_COLS if c in combined.columns]
+    return combined[["Last","First"] + [c for c in keep if c not in ("Last","First")]].copy()
 
 def generate_aggregated_hitting_df(df_raw: pd.DataFrame) -> pd.DataFrame:
     df = clean_df(df_raw)
@@ -245,8 +289,6 @@ def generate_aggregated_hitting_df(df_raw: pd.DataFrame) -> pd.DataFrame:
     for c in df.columns:
         if c not in ("Last","First"):
             df[c] = _to_num(df[c])
-    if df.empty:
-        return df
     agg = df.groupby(["Last","First"], as_index=False).sum(numeric_only=True)
     return prepare_batting_stats(agg)
 
@@ -301,22 +343,18 @@ def aggregate_stats_pitching(series_names):
         file = f"{name}.csv"
         if not os.path.exists(file): 
             continue
-        df = _read_csv_flex(file)
+        df = pd.read_csv(file, header=1)
         dfs.append(df)
     if not dfs:
         return pd.DataFrame(columns=PIT_INPUT_COLS)
     combined = pd.concat(dfs, ignore_index=True)
-    combined = clean_df(combined)
-    pit_df = _extract_stat_df(combined, "Pitching")
-    return pit_df
+    return clean_df(combined)
 
 def generate_aggregated_pitching_df(df_raw: pd.DataFrame) -> pd.DataFrame:
     df = clean_df(df_raw)
     for c in df.columns:
         if c not in ("Last","First"):
             df[c] = _to_num(df[c])
-    if df.empty:
-        return df
     agg = df.groupby(["Last","First"], as_index=False).sum(numeric_only=True)
     return prepare_pitching_stats(agg)
 
@@ -346,14 +384,12 @@ def aggregate_stats_fielding(series_names):
         file = f"{name}.csv"
         if not os.path.exists(file): 
             continue
-        df = _read_csv_flex(file)
+        df = pd.read_csv(file, header=1)
         dfs.append(df)
     if not dfs:
         return pd.DataFrame(columns=FLD_INPUT_COLS)
     combined = pd.concat(dfs, ignore_index=True)
-    combined = clean_df(combined)
-    fld_df = _extract_stat_df(combined, "Fielding")
-    return fld_df
+    return clean_df(combined)
 
 # ---------------------------
 # Catching Prep & Aggregate
@@ -381,98 +417,12 @@ def aggregate_stats_catching(series_names):
         file = f"{name}.csv"
         if not os.path.exists(file): 
             continue
-        df = _read_csv_flex(file)
+        df = pd.read_csv(file, header=1)
         dfs.append(df)
     if not dfs:
         return pd.DataFrame(columns=CAT_INPUT_COLS)
     combined = pd.concat(dfs, ignore_index=True)
-    combined = clean_df(combined)
-    cat_df = _extract_stat_df(combined, "Catching")
-    return cat_df
-
-# -----------------------
-# Flexible CSV reading + stat extraction (robust for series files)
-# -----------------------
-def _read_csv_flex(path: str) -> pd.DataFrame:
-    """
-    Read a CSV even if the true header row isn't at index 0/1.
-    Strategy:
-      1) Try header=1
-      2) Try header=0
-      3) header=None, find a row that contains 'Last' (case-insensitive), set as header
-    Always clean & drop duplicate columns.
-    """
-    try:
-        df = pd.read_csv(path, header=1)
-        if "Last" in df.columns or "last" in df.columns.str.lower().tolist():
-            return clean_df(df)
-    except Exception:
-        pass
-
-    try:
-        df = pd.read_csv(path, header=0)
-        if "Last" in df.columns or "last" in df.columns.str.lower().tolist():
-            return clean_df(df)
-    except Exception:
-        pass
-
-    # Fallback: sniff header row
-    raw = pd.read_csv(path, header=None, dtype=str)
-    header_row = None
-    for i in range(min(10, len(raw))):
-        row_vals = raw.iloc[i].astype(str).str.strip()
-        if any(v.lower() == "last" for v in row_vals):
-            header_row = i
-            break
-    if header_row is None:
-        # Give up gracefully
-        return clean_df(pd.read_csv(path, header=0))
-
-    df = pd.read_csv(path, header=header_row)
-    return clean_df(df)
-
-def _extract_stat_df(df: pd.DataFrame, stat_type: str) -> pd.DataFrame:
-    """
-    From a mixed CSV DataFrame, carve out only the columns relevant to a stat_type.
-    Returns possibly-empty DataFrame with at least Last/First if available.
-    """
-    df = clean_df(df)
-    # Map of required identifiers per section (minimum cues)
-    cues = {
-        "Hitting": {"PA","AB","H"},
-        "Pitching": {"IP","ER","H","BB","SO","BF"},
-        "Fielding": {"TC","PO","A"},
-        "Catching": {"INN","PB","SB-ATT","CS"},
-    }
-    input_cols = {
-        "Hitting": HIT_INPUT_COLS,
-        "Pitching": PIT_INPUT_COLS,
-        "Fielding": FLD_INPUT_COLS,
-        "Catching": CAT_INPUT_COLS,
-    }[stat_type]
-
-    have = set(df.columns)
-    # If we don't even have Last/First, nothing to do
-    if not {"Last","First"}.issubset(have):
-        return pd.DataFrame(columns=["Last","First"])
-
-    # Check if any cues exist; if none, return empty slice
-    if len(cues[stat_type].intersection(have)) == 0:
-        return pd.DataFrame(columns=["Last","First"] + list(cues[stat_type]))
-
-    keep = ["Last","First"] + [c for c in input_cols if c in have and c not in ("Last","First")]
-    out = df[keep].copy()
-    return out
-
-def _pitching_ip_gt_zero(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Return only rows with IP > 0.0 using baseball-tenths → decimal conversion.
-    If IP column is missing or df is empty, return df unchanged.
-    """
-    if df.empty or "IP" not in df.columns:
-        return df
-    ip_dec = pd.to_numeric(df["IP"].apply(_convert_innings_value), errors="coerce").fillna(0.0)
-    return df[ip_dec > 0.0].reset_index(drop=True)
+    return clean_df(combined)
 
 # -----------------------
 # Loading / Orchestrators
@@ -493,7 +443,8 @@ def load_cumulative():
     if not os.path.exists("cumulative.csv"):
         return {"Hitting": pd.DataFrame(),"Pitching": pd.DataFrame(),
                 "Fielding": pd.DataFrame(),"Catching": pd.DataFrame()}
-    raw = _read_csv_flex("cumulative.csv")
+    raw = pd.read_csv("cumulative.csv", header=1)
+    raw = clean_df(raw)
     return {
         "Hitting":  prepare_batting_stats(raw.copy()),
         "Pitching": prepare_pitching_stats(raw.copy()),
@@ -503,72 +454,28 @@ def load_cumulative():
 
 @st.cache_data(show_spinner=False)
 def load_series(stat_types, series_names):
-    """
-    Robust series loader:
-      - read each series CSV flexibly
-      - extract slices per stat type
-      - concat/aggregate per stat type
-    """
-    buckets = {st: [] for st in STAT_TYPES_ALL}
-    for name in series_names:
-        path = f"{name}.csv"
-        if not os.path.exists(path):
-            continue
-        df = _read_csv_flex(path)
-
-        # Extract per stat type, append if non-empty
-        if "Hitting" in stat_types:
-            s = _extract_stat_df(df, "Hitting")
-            if not s.empty:
-                buckets["Hitting"].append(s)
-        if "Pitching" in stat_types:
-            s = _extract_stat_df(df, "Pitching")
-            if not s.empty:
-                buckets["Pitching"].append(s)
-        if "Fielding" in stat_types:
-            s = _extract_stat_df(df, "Fielding")
-            if not s.empty:
-                buckets["Fielding"].append(s)
-        if "Catching" in stat_types:
-            s = _extract_stat_df(df, "Catching")
-            if not s.empty:
-                buckets["Catching"].append(s)
-
     out = {}
-    # Hitting
-    if buckets["Hitting"]:
-        raw = pd.concat(buckets["Hitting"], ignore_index=True)
-        out["Hitting"] = generate_aggregated_hitting_df(raw)
-    else:
-        out["Hitting"] = pd.DataFrame()
-    # Pitching
-    if buckets["Pitching"]:
-        raw = pd.concat(buckets["Pitching"], ignore_index=True)
-        out["Pitching"] = generate_aggregated_pitching_df(raw)
-    else:
-        out["Pitching"] = pd.DataFrame()
-    # Fielding
-    if buckets["Fielding"]:
-        raw = pd.concat(buckets["Fielding"], ignore_index=True)
-        # numeric & aggregate then prep
-        for c in raw.columns:
+    if "Hitting" in stat_types:
+        agg = aggregate_stats_hitting(series_names)
+        out["Hitting"] = generate_aggregated_hitting_df(agg)
+    if "Pitching" in stat_types:
+        agg = aggregate_stats_pitching(series_names)
+        out["Pitching"] = generate_aggregated_pitching_df(agg)
+    if "Fielding" in stat_types:
+        agg = aggregate_stats_fielding(series_names)
+        # numeric & aggregate
+        for c in agg.columns:
             if c not in ("Last","First"):
-                raw[c] = _to_num(raw[c])
-        raw = raw.groupby(["Last","First"], as_index=False).sum(numeric_only=True)
-        out["Fielding"] = prepare_fielding_stats(raw)
-    else:
-        out["Fielding"] = pd.DataFrame()
-    # Catching
-    if buckets["Catching"]:
-        raw = pd.concat(buckets["Catching"], ignore_index=True)
-        for c in raw.columns:
+                agg[c] = _to_num(agg[c])
+        agg = agg.groupby(["Last","First"], as_index=False).sum(numeric_only=True)
+        out["Fielding"] = prepare_fielding_stats(agg)
+    if "Catching" in stat_types:
+        agg = aggregate_stats_catching(series_names)
+        for c in agg.columns:
             if c not in ("Last","First"):
-                raw[c] = _to_num(raw[c])
-        raw = raw.groupby(["Last","First"], as_index=False).sum(numeric_only=True)
-        out["Catching"] = prepare_catching_stats(raw)
-    else:
-        out["Catching"] = pd.DataFrame()
-
+                agg[c] = _to_num(agg[c])
+        agg = agg.groupby(["Last","First"], as_index=False).sum(numeric_only=True)
+        out["Catching"] = prepare_catching_stats(agg)
     return out
 
 def filter_players(df, selected_players):
@@ -577,48 +484,6 @@ def filter_players(df, selected_players):
     if "Last" not in df.columns:
         return df
     return df[df["Last"].isin(selected_players)].reset_index(drop=True)
-
-def filter_qualified_frames(frames: dict, mins: dict) -> dict:
-    """
-    Keep only players who meet per-stat-type minimums.
-    Uses PA (Hitting), BF (Pitching), TC (Fielding), INN (Catching).
-    Coerces columns to numeric before filtering.
-    """
-    out = {}
-
-    # Hitting → PA ≥ min
-    df = frames.get("Hitting", pd.DataFrame()).copy()
-    if not df.empty and "PA" in df.columns:
-        pa = pd.to_numeric(df["PA"], errors="coerce").fillna(0)
-        out["Hitting"] = df[pa >= int(mins.get("Hitting", 1))].reset_index(drop=True)
-    else:
-        out["Hitting"] = df
-
-    # Pitching → BF ≥ min
-    df = frames.get("Pitching", pd.DataFrame()).copy()
-    if not df.empty and "BF" in df.columns:
-        bf = pd.to_numeric(df["BF"], errors="coerce").fillna(0)
-        out["Pitching"] = df[bf >= int(mins.get("Pitching", 1))].reset_index(drop=True)
-    else:
-        out["Pitching"] = df
-
-    # Fielding → TC ≥ min
-    df = frames.get("Fielding", pd.DataFrame()).copy()
-    if not df.empty and "TC" in df.columns:
-        tc = pd.to_numeric(df["TC"], errors="coerce").fillna(0)
-        out["Fielding"] = df[tc >= int(mins.get("Fielding", 1))].reset_index(drop=True)
-    else:
-        out["Fielding"] = df
-
-    # Catching → INN ≥ min
-    df = frames.get("Catching", pd.DataFrame()).copy()
-    if not df.empty and "INN" in df.columns:
-        inn = pd.to_numeric(df["INN"], errors="coerce").fillna(0)
-        out["Catching"] = df[inn >= float(mins.get("Catching", 1))].reset_index(drop=True)
-    else:
-        out["Catching"] = df
-
-    return out
 
 def extract_all_players(frames_dict):
     names = set()
@@ -630,9 +495,9 @@ def extract_all_players(frames_dict):
 # =========
 # UI Layout
 # =========
-st.set_page_config(page_title="PBDB Team Stats", layout="wide")
+st.set_page_config(page_title="EUCB Team Stats (Fall 2025)", layout="wide")
 
-st.title("PBDB Team Stats")
+st.title("EUCB Team Stats (Fall 2025)")
 st.caption("Default view: **Cumulative** stats for **All Players** across **all four stat types**.")
 
 with st.sidebar:
@@ -658,8 +523,7 @@ with st.sidebar:
             "Series (choose one or many)",
             options=series_options,
             default=series_options[:1] if series_options else [],
-            help="Series correspond to CSV base names (e.g., wake, jmu).",
-            format_func=series_label
+            help="Series correspond to CSV base names (e.g., wake, jmu)."
         )
 
 # ====================
@@ -673,7 +537,7 @@ else:
         st.warning("Select at least one series to view stats.")
         st.stop()
     frames = load_series(stat_types if stat_types else STAT_TYPES_ALL, selected_series)
-
+    
 # Player filter options are built from the currently loaded data (any stat type)
 all_player_lastnames = extract_all_players(frames)
 selected_players = st.multiselect(
@@ -703,6 +567,7 @@ for tab_name, tab in zip(tabs_to_show, tabs):
             df_before = len(df_filtered)
             df_filtered = _pitching_ip_gt_zero(df_filtered)
             if df_filtered.empty:
+                # Helpful message in both modes
                 st.warning(
                     "No **Pitching** rows match selected player(s) with > 0 IP."
                     if df_before > 0 else
@@ -718,10 +583,10 @@ for tab_name, tab in zip(tabs_to_show, tabs):
                 st.info(f"No data for **{tab_name}** with current filters.")
             continue
 
+        
         st.subheader(f"{tab_name} Stats")
         st.dataframe(df_filtered, use_container_width=True, hide_index=True)
 
-        
         # Acronym keys for Hitting & Pitching
         if tab_name in {"Hitting", "Pitching", "Fielding", "Catching"}:
             with st.expander(f"{tab_name} Acronym Key", expanded=False):
