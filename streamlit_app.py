@@ -542,6 +542,9 @@ selected_players = st.multiselect(
 tabs_to_show = stat_types if stat_types else STAT_TYPES_ALL
 tabs = st.tabs(tabs_to_show)
 
+tabs_to_show = stat_types if stat_types else STAT_TYPES_ALL
+tabs = st.tabs(tabs_to_show)
+
 for tab_name, tab in zip(tabs_to_show, tabs):
     with tab:
         df = frames.get(tab_name, pd.DataFrame())
@@ -549,11 +552,24 @@ for tab_name, tab in zip(tabs_to_show, tabs):
             st.info(f"No data for **{tab_name}** with current filters.")
             continue
 
+        # Apply player filter first
         df_filtered = filter_players(df, selected_players)
-        if df_filtered.empty and selected_players:
-            st.warning(f"No **{tab_name}** rows match selected player(s).")
-            continue
 
+        # If specific players are selected AND we're on Pitching,
+        # require > 0 IP (after converting baseball-tenths to decimal)
+        if selected_players and tab_name == "Pitching" and "IP" in df_filtered.columns:
+            ip_dec = df_filtered["IP"].apply(_convert_innings_value)
+            ip_dec = pd.to_numeric(ip_dec, errors="coerce").fillna(0.0)
+            df_filtered = df_filtered[ip_dec > 0.0].reset_index(drop=True)
+
+        # Guardrails
+        if df_filtered.empty:
+            if selected_players:
+                st.warning(f"No **{tab_name}** rows match selected player(s) with > 0 IP requirement." if tab_name == "Pitching"
+                           else f"No **{tab_name}** rows match selected player(s).")
+            else:
+                st.info(f"No data for **{tab_name}** with current filters.")
+            continue
         st.subheader(f"{tab_name} Stats")
         st.dataframe(df_filtered, use_container_width=True, hide_index=True)
 
