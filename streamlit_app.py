@@ -552,33 +552,11 @@ def prepare_catching_stats(df: pd.DataFrame) -> pd.DataFrame:
     df = clean_df(df)
     keep = [c for c in CAT_INPUT_COLS if c in df.columns]
     df = df[["Last","First"] + [c for c in keep if c not in ("Last","First")]].copy()
-
-    # --- Parse SB-ATT before numeric coercion ---
-    sb_allowed = None
-    attempts = None
-    if "SB-ATT" in df.columns:
-        parsed = df["SB-ATT"].apply(_parse_sb_att)
-        sb_allowed = parsed.apply(lambda t: float(t[0]))
-        attempts   = parsed.apply(lambda t: float(t[1]))
-        # Display column is attempts
-        df["SB-ATT"] = attempts
-        # Always recompute CS from parsed values to avoid dup-column mixups
-        df["CS"] = (attempts - sb_allowed).astype(float)
-
-    # Now coerce numerics
     for c in df.columns:
         if c not in ("Last","First"):
             df[c] = _to_num(df[c])
-
-    # Compute CS% from numeric columns
-    if "CS%" not in df.columns:
-        df["CS%"] = 0.0
-    att = _to_num(df["SB-ATT"]) if "SB-ATT" in df.columns else 0.0
-    cs  = _to_num(df["CS"]) if "CS" in df.columns else 0.0
-    with np.errstate(divide='ignore', invalid='ignore'):
-        cs_pct = np.where(att > 0, cs / att, 0.0)
-    df["CS%"] = _to_num(cs_pct).round(3)
-
+    if "CS%" not in df.columns and {"SB-ATT","CS"}.issubset(df.columns):
+        df["CS%"] = _safe_div(_col(df, "CS"), _col(df, "SB-ATT")).round(3)
     display_cols = ["Last","First","INN","PB","SB-ATT","CS","CS%"]
     existing = [c for c in display_cols if c in df.columns]
     return df[existing].copy()
@@ -640,16 +618,12 @@ def load_series(stat_types, series_names):
         agg = agg.groupby(["Last","First"], as_index=False).sum(numeric_only=True)
         out["Fielding"] = prepare_fielding_stats(agg)
     if "Catching" in stat_types:
-        agg_raw = aggregate_stats_catching(series_names)
-        # Parse SB-ATT and compute CS, CS% at the row level first
-        parsed = prepare_catching_stats(agg_raw)
-        # Now aggregate numerics by player
-        for c in parsed.columns:
+        agg = aggregate_stats_catching(series_names)
+        for c in agg.columns:
             if c not in ("Last","First"):
-                parsed[c] = _to_num(parsed[c])
-        grouped = parsed.groupby(["Last","First"], as_index=False).sum(numeric_only=True)
-        # Recompute CS% on the combined totals
-        out["Catching"] = prepare_catching_stats(grouped)
+                agg[c] = _to_num(agg[c])
+        agg = agg.groupby(["Last","First"], as_index=False).sum(numeric_only=True)
+        out["Catching"] = prepare_catching_stats(agg)
     return out
 
 def filter_players(df, selected_players):
@@ -698,35 +672,6 @@ def filter_qualified_frames(frames: dict, mins: dict) -> dict:
 
 # =====================================================
 # TOTALS ROW HELPERS
-
-def _parse_sb_att(value):
-    """
-    Parse catcher 'SB-ATT' strings like '5-5' (SB-ATT) into (sb_allowed, attempts).
-    Returns (sb_allowed, attempts) as floats. Handles None/NaN/empty gracefully.
-    Accepts dashes '-', '–', '—', with/without spaces.
-    """
-    try:
-        if pd.isna(value):
-            return 0.0, 0.0
-        s = str(value).strip()
-        if not s:
-            return 0.0, 0.0
-        s = s.replace("—", "-").replace("–", "-")
-        if "-" in s:
-            parts = [p.strip() for p in s.split("-", 1)]
-            if len(parts) == 2:
-                sb = float(pd.to_numeric(parts[0], errors="coerce"))
-                att = float(pd.to_numeric(parts[1], errors="coerce"))
-                sb = 0.0 if pd.isna(sb) else sb
-                att = 0.0 if pd.isna(att) else att
-                return sb, att
-        # If it's a single number, treat as attempts, 0 SB allowed
-        att = float(pd.to_numeric(s, errors="coerce"))
-        att = 0.0 if pd.isna(att) else att
-        return 0.0, att
-    except Exception:
-        return 0.0, 0.0
-
 # =====================================================
 def _dec_to_baseball_tenths(ip_dec: float) -> float:
     """
