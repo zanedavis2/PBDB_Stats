@@ -1111,3 +1111,90 @@ for tab_name, tab in zip(tabs_to_show, tabs):
         elif tab_name == "Catching":
             with st.expander("Catching Acronym Key", expanded=False):
                 st.dataframe(CATCHING_KEY, use_container_width=True, hide_index=True)
+
+
+# --- PATCH START: safer _backfill_hitting_counts and load_cumulative guards ---
+def _backfill_hitting_counts(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Coerce numerics and reconstruct LD/FB/GB, QAB, HHB from % columns when counts are missing.
+    Extra guards added to avoid NameError/KeyError if unexpected headers appear.
+    """
+    if df is None or not isinstance(df, pd.DataFrame) or df.empty:
+        return pd.DataFrame(columns=HIT_INPUT_COLS)
+
+    df = df.copy()
+
+    # Ensure name columns exist
+    if "Last" not in df.columns: df["Last"] = ""
+    if "First" not in df.columns: df["First"] = ""
+
+    # Coerce numeric-like columns (skip names)
+    for c_name in list(df.columns):
+        if c_name not in ("Last", "First"):
+            df[c_name] = _to_num(df[c_name]) if c_name in df.columns else 0.0
+
+    # Base columns with safe defaults
+    AB  = _col(df, "AB")
+    SO  = _col(df, "SO")
+    HR  = _col(df, "HR")
+    SF  = _col(df, "SF")
+    BIP = (AB - SO - HR + SF).clip(lower=0)
+
+    # Reconstruct LD/FB/GB from % if missing or zero totals
+    for stat in ("LD", "FB", "GB"):
+        pct_col = f"{stat}%"
+        need_counts = (stat not in df.columns) or (_to_num(df.get(stat, 0)).sum() == 0)
+        if need_counts and (pct_col in df.columns):
+            ratio = _pct_to_ratio(df[pct_col])
+            # Align to index just in case
+            if isinstance(ratio, np.ndarray):
+                ratio = pd.Series(ratio, index=df.index)
+            df[stat] = np.rint(ratio * BIP).astype(float)
+
+    # QAB from QAB% * PA
+    if ("QAB" not in df.columns or _to_num(df.get("QAB", 0)).sum() == 0) and "QAB%" in df.columns:
+        df["QAB"] = np.rint(_pct_to_ratio(df["QAB%"]) * _col(df, "PA")).astype(float)
+
+    # HHB from HHB% * AB (fallback to PA)
+    if ("HHB" not in df.columns or _to_num(df.get("HHB", 0)).sum() == 0) and "HHB%" in df.columns:
+        base = _col(df, "AB")
+        base = np.where(base > 0, base, _col(df, "PA"))
+        df["HHB"] = np.rint(_pct_to_ratio(df["HHB%"]) * base).astype(float)
+
+    return df
+
+# Guard inside load_cumulative to prevent mixed-sheet surprises from breaking Hitting prep
+_old_load_cumulative = load_cumulative
+@st.cache_data(show_spinner=False)
+def load_cumulative():
+    if not os.path.exists("cumulative.csv"):
+        return {"Hitting": pd.DataFrame(),"Pitching": pd.DataFrame(),
+                "Fielding": pd.DataFrame(),"Catching": pd.DataFrame()}
+    try:
+        raw = pd.read_csv("cumulative.csv", header=1)
+    except Exception:
+        raw = pd.read_csv("cumulative.csv", header=0)
+
+    # Hitting/Fielding/Catching use standard cleaning
+    raw_clean = clean_df(raw, keep="first")
+
+    # Pitching carved out BEFORE cleaning
+    raw_pitch = _select_pitching_view(raw)
+    raw_pitch = clean_df(raw_pitch, keep="last")
+
+    # Extra: ensure required minimal columns exist before prepare_* calls
+    for col in ("Last","First","PA","AB"):
+        if col not in raw_clean.columns:
+            raw_clean[col] = 0
+    for col in ("Last","First","IP","BF"):
+        if col not in raw_pitch.columns:
+            raw_pitch[col] = 0
+
+    return {
+        "Hitting":  prepare_batting_stats(raw_clean.copy()),
+        "Pitching": prepare_pitching_stats(raw_pitch.copy()),
+        "Fielding": prepare_fielding_stats(raw_clean.copy()),
+        "Catching": prepare_catching_stats(raw_clean.copy()),
+    }
+# --- PATCH END ---
+
