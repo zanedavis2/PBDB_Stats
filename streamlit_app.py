@@ -487,31 +487,119 @@ def prepare_pitching_stats(df: pd.DataFrame) -> pd.DataFrame:
     return df[existing].copy()
 
 def aggregate_stats_pitching(series_names):
+    """
+    Robustly load multiple series CSVs and extract ONLY the pitching block.
+    We:
+      - read the CSV (header autodetect via _smart_read_csv),
+      - locate the pitching section boundaries by column positions,
+      - for each desired pitching stat, pick the occurrence that lives inside that block
+        (so we don't accidentally grab Hitting's LD%/FB%/GB%),
+      - then clean and return the combined frame.
+    """
+    def _basename(col):
+        # Return the "base" header name before any ".1", ".2" suffixes
+        return str(col).strip().split(".", 1)[0]
+
+    # Columns we want to keep for pitching (base names)
+    desired_bases = [
+        "IP","ER","H","BB","R","SO","K-L","HR","#P","BF","HBP",
+        "FPS%","FPSO%","FPSW%","FPSH%","S%","SM%","LD%","FB%","GB%",
+        "BABIP","BA/RISP","CS","SB","SB%","<3%","HHB%","WEAK%","BBS"
+    ]
+
+    def _extract_pitching_block(df_raw):
+        # Work on a copy; DO NOT normalize headers yet (we need the suffixes to distinguish sections)
+        df0 = df_raw.copy()
+        cols = list(df0.columns)
+
+        # Try to find name columns by header; fallback to first two cols
+        try:
+            last_idx = next(i for i, c in enumerate(cols) if _basename(c) == "Last")
+        except StopIteration:
+            last_idx = 0
+        try:
+            first_idx = next(i for i, c in enumerate(cols) if _basename(c) == "First")
+        except StopIteration:
+            first_idx = 1 if len(cols) > 1 else 0
+
+        # ---- Find pitching section start/end by position ----
+        # Pitching block begins at the first occurrence of base name "IP"
+        pitch_start = None
+        for i, c in enumerate(cols):
+            if _basename(c) == "IP":
+                pitch_start = i
+                break
+
+        # Heuristic for end of pitching block:
+        # Stop at the first column after pitch_start that looks like the next section's leading header.
+        # Common "next section" markers in GameChanger exports: "TC" (Fielding) or "INN"/"PB" (Catching).
+        # If none are found, we go to the end.
+        pitch_end = len(cols)
+        if pitch_start is not None:
+            for j in range(pitch_start + 1, len(cols)):
+                base = _basename(cols[j])
+                if base in ("TC", "INN", "PB"):  # next section likely starts here
+                    pitch_end = j
+                    break
+
+        # If we cannot detect the pitching block, fallback to name + a safe numeric slice (your original approach)
+        if pitch_start is None:
+            # fallback slice: keep only columns with base names in desired_bases (plus names)
+            keep_mask = [False] * len(cols)
+            base_list = [_basename(c) for c in cols]
+            for k, b in enumerate(base_list):
+                if b in desired_bases or b in ("Last", "First"):
+                    keep_mask[k] = True
+            selected_indices = [i for i, m in enumerate(keep_mask) if m]
+        else:
+            # Map each desired base name to the column instance INSIDE [pitch_start, pitch_end)
+            selected_indices = []
+            # Always include names first (by index positions discovered)
+            selected_indices.extend(sorted(set([last_idx, first_idx])))
+
+            for base_needed in desired_bases:
+                # Find the first matching column INSIDE the pitching block
+                for idx in range(pitch_start, pitch_end):
+                    if _basename(cols[idx]) == base_needed:
+                        selected_indices.append(idx)
+                        break  # take the first occurrence in the pitching block
+
+            # Deduplicate while preserving order
+            seen = set()
+            selected_indices = [i for i in selected_indices if (i not in seen and not seen.add(i))]
+
+        # Slice columns by index
+        df_pitch = df0.iloc[:, selected_indices].copy()
+
+        # NOW normalize headers (remove .1/.2 suffixes) and dedupe keeping first occurrence
+        df_pitch.columns = [ _basename(c) for c in df_pitch.columns ]
+        df_pitch = df_pitch.loc[:, ~pd.Index(df_pitch.columns).duplicated(keep="first")]
+
+        # Ensure name columns exist
+        if "Last" not in df_pitch.columns:  df_pitch["Last"] = ""
+        if "First" not in df_pitch.columns: df_pitch["First"] = ""
+
+        # Clean names / drop rows with both names missing (uses your helper)
+        df_pitch = clean_df(df_pitch)
+        return df_pitch
+
     dfs = []
     for name in series_names:
         file = f"{name}.csv"
         if not os.path.exists(file):
             continue
-        df = _ensure_name_cols(_smart_read_csv(file))
-        dfs.append(df)
+        # Use your robust reader and name normalizer
+        df_raw = _ensure_name_cols(_smart_read_csv(file))
+        df_pitch = _extract_pitching_block(df_raw)
+        dfs.append(df_pitch)
+
     if not dfs:
-        return pd.DataFrame(columns=PIT_INPUT_COLS)
+        # empty frame with expected columns (helps downstream code)
+        cols = ["Last","First"] + desired_bases
+        return pd.DataFrame(columns=cols)
+
     combined = pd.concat(dfs, ignore_index=True)
-    return _drop_rows_nan_names(clean_df(combined))
-
-def generate_aggregated_pitching_df(df_raw: pd.DataFrame) -> pd.DataFrame:
-    df = clean_df(df_raw)
-    df = _backfill_pitching_counts(df)
-    for _colname in ("Last","First","IP","BF"):
-        if _colname not in df.columns:
-            df[_colname] = 0
-    for c in df.columns:
-        if c not in ("Last","First"):
-            df[c] = _to_num(df[c])
-    agg = df.groupby(["Last","First"], as_index=False).sum(numeric_only=True)
-    agg = _drop_rows_nan_names(clean_df(agg))
-    return prepare_pitching_stats(agg)
-
+    return clean_df(combined)
 # =====================================================
 # FIELDING
 # =====================================================
