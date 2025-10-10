@@ -640,12 +640,16 @@ def load_series(stat_types, series_names):
         agg = agg.groupby(["Last","First"], as_index=False).sum(numeric_only=True)
         out["Fielding"] = prepare_fielding_stats(agg)
     if "Catching" in stat_types:
-        agg = aggregate_stats_catching(series_names)
-        for c in agg.columns:
+        agg_raw = aggregate_stats_catching(series_names)
+        # Parse SB-ATT and compute CS, CS% at the row level first
+        parsed = prepare_catching_stats(agg_raw)
+        # Now aggregate numerics by player
+        for c in parsed.columns:
             if c not in ("Last","First"):
-                agg[c] = _to_num(agg[c])
-        agg = agg.groupby(["Last","First"], as_index=False).sum(numeric_only=True)
-        out["Catching"] = prepare_catching_stats(agg)
+                parsed[c] = _to_num(parsed[c])
+        grouped = parsed.groupby(["Last","First"], as_index=False).sum(numeric_only=True)
+        # Recompute CS% on the combined totals
+        out["Catching"] = prepare_catching_stats(grouped)
     return out
 
 def filter_players(df, selected_players):
