@@ -639,6 +639,217 @@ def filter_qualified_frames(frames: dict, mins: dict) -> dict:
         out["Catching"] = df
     return out
 
+
+
+# =====================================================
+# TOTALS ROW HELPERS
+# =====================================================
+def _dec_to_baseball_tenths(ip_dec: float) -> float:
+    """
+    Convert decimal innings back to baseball-tenths (e.g., 4 + 1/3 -> 4.1, 4 + 2/3 -> 4.2).
+    Returns a float like 7.2
+    """
+    try:
+        whole = int(np.floor(ip_dec))
+        frac = ip_dec - whole
+        # closest of 0, 1/3, 2/3
+        if abs(frac - 1/3) < 1e-6:
+            return whole + 0.1
+        elif abs(frac - 2/3) < 1e-6:
+            return whole + 0.2
+        else:
+            # round to nearest third
+            thirds = round(frac * 3)
+            if thirds == 1:
+                return whole + 0.1
+            elif thirds == 2:
+                return whole + 0.2
+            else:
+                return float(whole)
+    except Exception:
+        return float(ip_dec)
+
+def _append_totals_row_hitting(df: pd.DataFrame) -> pd.DataFrame:
+    if df.empty:
+        return df
+    tmp = df.copy()
+
+    # Convert numeric-like cols
+    for c in tmp.columns:
+        if c not in ("Last","First"):
+            tmp[c] = _to_num(tmp[c])
+
+    # Sum raw counts where available
+    get = lambda c: _to_num(tmp[c]) if c in tmp.columns else 0.0
+    PA  = get("PA").sum()
+    AB  = get("AB").sum()
+    H   = get("H").sum()
+    BB  = get("BB").sum()
+    HBP = get("HBP").sum()
+    SF  = get("SF").sum()
+    TB  = get("TB").sum()
+    R   = get("R").sum()
+    RBI = get("RBI").sum()
+    SO  = get("SO").sum()
+    XBH = get("XBH").sum()
+    _2B = get("2B").sum()
+    _3B = get("3B").sum()
+    HR  = get("HR").sum()
+    SB  = get("SB").sum()
+    CS  = get("CS").sum()
+    QAB = get("QAB").sum()
+    HHB = get("HHB").sum()
+    LDc = get("LD").sum()
+    FBc = get("FB").sum()
+    GBc = get("GB").sum()
+    H_RISP  = get("H_RISP").sum()
+    AB_RISP = get("AB_RISP").sum()
+    PS  = get("PS").sum()
+    OUT2RBI = get("2OUTRBI").sum()
+
+    # If LD/FB/GB counts not present, try reconstruct from % and BIP totals
+    BIP = AB - SO - HR + SF
+    if LDc == 0 and "LD%" in tmp.columns:
+        LDc = float(np.rint(_to_num(tmp["LD%"]).mean() * BIP)) if BIP > 0 else 0.0
+    if FBc == 0 and "FB%" in tmp.columns:
+        FBc = float(np.rint(_to_num(tmp["FB%"]).mean() * BIP)) if BIP > 0 else 0.0
+    if GBc == 0 and "GB%" in tmp.columns:
+        GBc = float(np.rint(_to_num(tmp["GB%"]).mean() * BIP)) if BIP > 0 else 0.0
+
+    # Recompute team rates
+    def sd(n,d):
+        return 0.0 if d == 0 else round(float(n)/float(d), 3)
+
+    AVG   = sd(H, AB)
+    OBP   = sd(H + BB + HBP, AB + BB + HBP + SF)
+    SLG   = sd(TB, AB)
+    OPS   = round(OBP + SLG, 3)
+    QABp  = sd(QAB, PA)
+    HHBp  = sd(HHB, AB if AB > 0 else PA)
+    LDp   = sd(LDc, (LDc + FBc + GBc))
+    FBp   = sd(FBc, (LDc + FBc + GBc))
+    GBp   = sd(GBc, (LDc + FBc + GBc))
+    BABIP = sd(H - HR, AB - SO - HR + SF)
+    BARISP= sd(H_RISP, AB_RISP)
+    PS_PA = sd(PS, PA)
+    BB_K  = 0.0 if SO == 0 else round(BB / SO, 3)
+    Cp    = sd(AB - SO, AB)
+
+    totals = {
+        "Last": "TOTAL", "First": "",
+        "PA": PA, "AB": AB, "AVG": AVG, "OBP": OBP, "OPS": OPS, "SLG": SLG, "H": H,
+        "R": R, "RBI": RBI, "BB": BB, "SO": SO, "XBH": XBH, "2B": _2B, "3B": _3B, "HR": HR,
+        "TB": TB, "SB": SB, "PS/PA": PS_PA, "BB/K": BB_K, "C%": Cp, "QAB": QAB, "QAB%": QABp,
+        "HHB": HHB, "HHB%": HHBp, "LD%": LDp, "FB%": FBp, "GB%": GBp, "BABIP": BABIP,
+        "BA/RISP": BARISP, "2OUTRBI": OUT2RBI
+    }
+
+    # Align totals dict to current df columns; fill missing keys with 0
+    row = {c: totals.get(c, 0.0 if c not in ("Last","First") else ("TOTAL" if c=="Last" else "")) for c in tmp.columns}
+    return pd.concat([tmp, pd.DataFrame([row])], ignore_index=True)
+
+def _append_totals_row_pitching(df: pd.DataFrame) -> pd.DataFrame:
+    if df.empty:
+        return df
+    tmp = df.copy()
+    for c in tmp.columns:
+        if c not in ("Last","First"):
+            tmp[c] = _to_num(tmp[c])
+
+    # Sum counts
+    get = lambda c: _to_num(tmp[c]).sum() if c in tmp.columns else 0.0
+    ER = get("ER"); H = get("H"); R = get("R"); BB = get("BB"); SO = get("SO")
+    HR = get("HR"); P = get("#P"); BF = get("BF"); HBP = get("HBP")
+    CS = get("CS"); SB = get("SB"); BBS = get("BBS")
+    Strikes = get("Strikes"); FPS = get("FirstPitchStrikes")
+    FPSO = get("FPSO"); FPSH = get("FPSH")
+    GB = get("GroundBalls"); FB = get("FlyBalls"); LD = get("LineDrives")
+    HHB = get("HardHitBalls"); WEAK = get("WeakContact"); U3 = get("Under3Pitches")
+    SM = get("SwingMisses")
+
+    # Sum IP as decimal-thirds
+    ip_dec = 0.0
+    if "IP" in tmp.columns:
+        ip_dec = float(_to_num(tmp["IP"]).apply(_convert_innings_value).sum())
+
+    BIP = max(BF - SO - BB - HBP, 0.0)
+
+    def sd(n,d):
+        return 0.0 if d == 0 else round(float(n)/float(d), 3)
+
+    ERA  = sd(ER * 9.0, ip_dec)
+    WHIP = sd(BB + H, ip_dec)
+    BB_INN = sd(BB, ip_dec)
+    FIP = round((sd(13*HR + 3*(BB + HBP) - 2*SO, ip_dec) + 3.1), 3)
+
+    S_pct   = sd(Strikes, P)
+    FPS_pct = sd(FPS, BF)
+    FPSO_pct= sd(FPSO, BF)
+    FPSH_pct= sd(FPSH, BF)
+    SM_pct  = sd(SM, P)
+    LD_pct  = sd(LD, BIP)
+    FB_pct  = sd(FB, BIP)
+    GB_pct  = sd(GB, BIP)
+    HHB_pct = sd(HHB, BIP)
+    WEAK_pct= sd(WEAK, BIP)
+    U3_pct  = sd(U3, BF)
+    SB_pct  = 0.0 if (SB + CS) == 0 else round(SB / (SB + CS), 3)
+    BAA     = sd(H, BF - BB - HBP)
+    BABIP   = sd(H - HR, BF - SO - HR - BB - HBP)
+
+    # Convert ip_dec to baseball-tenths style float
+    ip_disp = _dec_to_baseball_tenths(ip_dec)
+
+    totals = {
+        "Last": "TOTAL", "First": "",
+        "IP": ip_disp, "ERA": ERA, "WHIP": WHIP, "SO": SO, "K-L": get("K-L"), "H": H, "R": R, "ER": ER,
+        "BB": BB, "BB/INN": BB_INN, "FIP": FIP, "S%": S_pct, "FPS%": FPS_pct, "FPSO%": FPSO_pct, "FPSH%": FPSH_pct,
+        "BAA": BAA, "BBS": BBS, "SM%": SM_pct, "LD%": LD_pct, "FB%": FB_pct, "GB%": GB_pct, "BABIP": BABIP,
+        "BA/RISP": 0.0, "CS": CS, "SB": SB, "SB%": SB_pct, "<3%": U3_pct, "HHB%": HHB_pct, "WEAK%": WEAK_pct,
+        "#P": P, "BF": BF, "HBP": HBP
+    }
+    row = {c: totals.get(c, 0.0 if c not in ("Last","First") else ("TOTAL" if c=="Last" else "")) for c in tmp.columns}
+    return pd.concat([tmp, pd.DataFrame([row])], ignore_index=True)
+
+def _append_totals_row_fielding(df: pd.DataFrame) -> pd.DataFrame:
+    if df.empty:
+        return df
+    tmp = df.copy()
+    for c in tmp.columns:
+        if c not in ("Last","First"):
+            tmp[c] = _to_num(tmp[c])
+    get = lambda c: _to_num(tmp[c]).sum() if c in tmp.columns else 0.0
+    TC = get("TC"); PO = get("PO"); A = get("A"); E = get("E"); DP = get("DP")
+    FPCT = 0.0 if TC == 0 else round((PO + A) / TC, 3)
+    totals = {"Last":"TOTAL","First":"", "TC":TC,"PO":PO,"A":A,"E":E,"DP":DP,"FPCT":FPCT}
+    row = {c: totals.get(c, 0.0 if c not in ("Last","First") else ("TOTAL" if c=="Last" else "")) for c in tmp.columns}
+    return pd.concat([tmp, pd.DataFrame([row])], ignore_index=True)
+
+def _append_totals_row_catching(df: pd.DataFrame) -> pd.DataFrame:
+    if df.empty:
+        return df
+    tmp = df.copy()
+    for c in tmp.columns:
+        if c not in ("Last","First"):
+            tmp[c] = _to_num(tmp[c])
+    get = lambda c: _to_num(tmp[c]).sum() if c in tmp.columns else 0.0
+    INN = get("INN"); PB = get("PB"); SB_ATT = get("SB-ATT"); CS = get("CS")
+    CS_pct = 0.0 if SB_ATT == 0 else round(CS / SB_ATT, 3)
+    totals = {"Last":"TOTAL","First":"", "INN":INN,"PB":PB,"SB-ATT":SB_ATT,"CS":CS,"CS%":CS_pct}
+    row = {c: totals.get(c, 0.0 if c not in ("Last","First") else ("TOTAL" if c=="Last" else "")) for c in tmp.columns}
+    return pd.concat([tmp, pd.DataFrame([row])], ignore_index=True)
+
+def _append_totals(df: pd.DataFrame, tab_name: str) -> pd.DataFrame:
+    if tab_name == "Hitting":
+        return _append_totals_row_hitting(df)
+    if tab_name == "Pitching":
+        return _append_totals_row_pitching(df)
+    if tab_name == "Fielding":
+        return _append_totals_row_fielding(df)
+    if tab_name == "Catching":
+        return _append_totals_row_catching(df)
+    return df
+
 # =====================================================
 # UI LAYOUT (same format/end product)
 # =====================================================
@@ -701,6 +912,8 @@ for tab_name, tab in zip(tabs_to_show, tabs):
             continue
 
         df_filtered = filter_players(df, selected_players)
+        # Append totals row prior to formatting
+        df_filtered = _append_totals(df_filtered, tab_name)
         if selected_players and tab_name == "Pitching":
             df_before = len(df_filtered)
             df_filtered = _pitching_ip_gt_zero(df_filtered)
