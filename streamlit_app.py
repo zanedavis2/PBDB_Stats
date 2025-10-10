@@ -122,19 +122,12 @@ def clean_df(df: pd.DataFrame) -> pd.DataFrame:
     if "Last" not in df.columns: df["Last"] = ""
     if "First" not in df.columns: df["First"] = ""
 
-    # Capture raw strings before title-casing so we can detect 'nan' reliably
-    last_raw = df["Last"].astype(str).str.strip()
-    first_raw = df["First"].astype(str).str.strip()
+    # Drop rows where BOTH names are NaN-like
+    df = _drop_rows_nan_names(df)
 
-    # Drop rows where BOTH names are NaN-ish (actual NaN or literal 'nan' string in any case)
-    last_is_nanlike = last_raw.str.lower().eq("nan") | last_raw.eq("")
-    first_is_nanlike = first_raw.str.lower().eq("nan") | first_raw.eq("")
-    mask_keep = ~(last_is_nanlike & first_is_nanlike)
-    df = df.loc[mask_keep].copy()
-
-    # Now pretty format names
-    df["Last"] = last_raw.loc[mask_keep].str.title()
-    df["First"] = first_raw.loc[mask_keep].str.title()
+    # Title-case remaining names
+    df["Last"] = df["Last"].astype(str).str.strip().str.title()
+    df["First"] = df["First"].astype(str).str.strip().str.title()
     return df
 
 def _smart_read_csv(path: str) -> pd.DataFrame:
@@ -219,6 +212,28 @@ def _pitching_ip_gt_zero(df: pd.DataFrame) -> pd.DataFrame:
         return df
     ip_dec = pd.to_numeric(df["IP"].apply(_convert_innings_value), errors="coerce").fillna(0.0)
     return df[ip_dec > 0.0].reset_index(drop=True)
+
+
+
+def _is_nanlike_series(s: pd.Series) -> pd.Series:
+    """Return boolean Series where entries are NaN-ish: NaN, empty, or strings like 'nan', 'none', 'null' (case-insensitive)."""
+    s_str = s.astype(str).str.strip()
+    return (
+        s.isna()
+        | s_str.eq("")
+        | s_str.str.lower().isin({"nan", "none", "null", "n/a", "na"})
+    )
+
+def _drop_rows_nan_names(df: pd.DataFrame) -> pd.DataFrame:
+    if not {"Last","First"}.issubset(df.columns):
+        return df
+    last_raw = df["Last"]
+    first_raw = df["First"]
+    last_is_nan = _is_nanlike_series(last_raw)
+    first_is_nan = _is_nanlike_series(first_raw)
+    # drop when BOTH are nan-like
+    keep = ~(last_is_nan & first_is_nan)
+    return df.loc[keep].copy()
 
 # =====================================================
 # HITTING
@@ -335,7 +350,7 @@ def aggregate_stats_hitting(series_names):
     if not dfs:
         return pd.DataFrame(columns=HIT_INPUT_COLS)
     combined = pd.concat(dfs, ignore_index=True)
-    return clean_df(combined)
+    return _drop_rows_nan_names(clean_df(combined))
 
 def generate_aggregated_hitting_df(df_raw: pd.DataFrame) -> pd.DataFrame:
     df = clean_df(df_raw)
@@ -351,7 +366,7 @@ def generate_aggregated_hitting_df(df_raw: pd.DataFrame) -> pd.DataFrame:
     # aggregate by player (sum counts)
     agg = df.groupby(["Last","First"], as_index=False).sum(numeric_only=True)
     # recompute rates on combined (fresh averages)
-    agg = clean_df(agg)
+    agg = _drop_rows_nan_names(clean_df(agg))
     return prepare_batting_stats(agg)
 
 # =====================================================
@@ -482,7 +497,7 @@ def aggregate_stats_pitching(series_names):
     if not dfs:
         return pd.DataFrame(columns=PIT_INPUT_COLS)
     combined = pd.concat(dfs, ignore_index=True)
-    return clean_df(combined)
+    return _drop_rows_nan_names(clean_df(combined))
 
 def generate_aggregated_pitching_df(df_raw: pd.DataFrame) -> pd.DataFrame:
     df = clean_df(df_raw)
@@ -494,7 +509,7 @@ def generate_aggregated_pitching_df(df_raw: pd.DataFrame) -> pd.DataFrame:
         if c not in ("Last","First"):
             df[c] = _to_num(df[c])
     agg = df.groupby(["Last","First"], as_index=False).sum(numeric_only=True)
-    agg = clean_df(agg)
+    agg = _drop_rows_nan_names(clean_df(agg))
     return prepare_pitching_stats(agg)
 
 # =====================================================
@@ -526,7 +541,7 @@ def aggregate_stats_fielding(series_names):
     if not dfs:
         return pd.DataFrame(columns=FLD_INPUT_COLS)
     combined = pd.concat(dfs, ignore_index=True)
-    return clean_df(combined)
+    return _drop_rows_nan_names(clean_df(combined))
 
 # =====================================================
 # CATCHING
@@ -537,11 +552,43 @@ def prepare_catching_stats(df: pd.DataFrame) -> pd.DataFrame:
     df = clean_df(df)
     keep = [c for c in CAT_INPUT_COLS if c in df.columns]
     df = df[["Last","First"] + [c for c in keep if c not in ("Last","First")]].copy()
+
+    # --- Parse SB-ATT before numeric coercion ---
+    if "SB-ATT" in df.columns:
+        # Build numeric SB allowed and ATT from strings like "5-5"
+        parsed = df["SB-ATT"].apply(_parse_sb_att)
+        df["_SB_ALLOWED"] = parsed.apply(lambda t: t[0])
+        df["_ATTEMPTS"]   = parsed.apply(lambda t: t[1])
+        # Keep display column as attempts
+        df["SB-ATT"] = df["_ATTEMPTS"]
+
+        # If CS missing or zero, compute CS = ATTEMPTS - SB_ALLOWED
+        if "CS" not in df.columns:
+            df["CS"] = df["_ATTEMPTS"] - df["_SB_ALLOWED"]
+        else:
+            cs_num = pd.to_numeric(df["CS"], errors="coerce").fillna(0.0)
+            need = cs_num == 0
+            df.loc[need, "CS"] = (df.loc[need, "_ATTEMPTS"] - df.loc[need, "_SB_ALLOWED"]).astype(float)
+
+    # Now coerce numerics
     for c in df.columns:
         if c not in ("Last","First"):
             df[c] = _to_num(df[c])
-    if "CS%" not in df.columns and {"SB-ATT","CS"}.issubset(df.columns):
-        df["CS%"] = _safe_div(_col(df, "CS"), _col(df, "SB-ATT")).round(3)
+
+    # Compute CS% if missing or zero
+    if "CS%" not in df.columns:
+        df["CS%"] = 0.0
+    att = df["SB-ATT"] if "SB-ATT" in df.columns else 0.0
+    cs = df["CS"] if "CS" in df.columns else 0.0
+    with np.errstate(divide='ignore', invalid='ignore'):
+        cs_pct = np.where(_to_num(att) > 0, _to_num(cs) / _to_num(att), 0.0)
+    df["CS%"] = cs_pct.round(3)
+
+    # Clean up helper cols if they exist
+    for helper in ["_SB_ALLOWED","_ATTEMPTS"]:
+        if helper in df.columns:
+            df.drop(columns=[helper], inplace=True)
+
     display_cols = ["Last","First","INN","PB","SB-ATT","CS","CS%"]
     existing = [c for c in display_cols if c in df.columns]
     return df[existing].copy()
@@ -557,7 +604,7 @@ def aggregate_stats_catching(series_names):
     if not dfs:
         return pd.DataFrame(columns=CAT_INPUT_COLS)
     combined = pd.concat(dfs, ignore_index=True)
-    return clean_df(combined)
+    return _drop_rows_nan_names(clean_df(combined))
 
 # =====================================================
 # DATA LOADING / ORCHESTRATION
@@ -657,6 +704,35 @@ def filter_qualified_frames(frames: dict, mins: dict) -> dict:
 
 # =====================================================
 # TOTALS ROW HELPERS
+
+def _parse_sb_att(value):
+    """
+    Parse catcher 'SB-ATT' strings like '5-5' (SB-ATT) into (sb_allowed, attempts).
+    Returns (sb_allowed, attempts) as floats. Handles None/NaN/empty gracefully.
+    Accepts dashes '-', '–', '—', with/without spaces.
+    """
+    try:
+        if pd.isna(value):
+            return 0.0, 0.0
+        s = str(value).strip()
+        if not s:
+            return 0.0, 0.0
+        s = s.replace("—", "-").replace("–", "-")
+        if "-" in s:
+            parts = [p.strip() for p in s.split("-", 1)]
+            if len(parts) == 2:
+                sb = float(pd.to_numeric(parts[0], errors="coerce"))
+                att = float(pd.to_numeric(parts[1], errors="coerce"))
+                sb = 0.0 if pd.isna(sb) else sb
+                att = 0.0 if pd.isna(att) else att
+                return sb, att
+        # If it's a single number, treat as attempts, 0 SB allowed
+        att = float(pd.to_numeric(s, errors="coerce"))
+        att = 0.0 if pd.isna(att) else att
+        return 0.0, att
+    except Exception:
+        return 0.0, 0.0
+
 # =====================================================
 def _dec_to_baseball_tenths(ip_dec: float) -> float:
     """
@@ -926,6 +1002,7 @@ for tab_name, tab in zip(tabs_to_show, tabs):
             continue
 
         df_filtered = filter_players(df, selected_players)
+        df_filtered = _drop_rows_nan_names(df_filtered)
         # Append totals row prior to formatting
         df_filtered = _append_totals(df_filtered, tab_name)
         if selected_players and tab_name == "Pitching":
