@@ -372,193 +372,233 @@ def generate_aggregated_hitting_df(df_raw: pd.DataFrame) -> pd.DataFrame:
 # =====================================================
 # PITCHING
 # =====================================================
-PIT_INPUT_COLS = [
-    "Last","First","IP","ER","H","R","BB","SO","K-L","HR","#P","BF","HBP",
-    "S%","FPS%","FPSO%","FPSH%","SM%","LD%","FB%","GB%","BABIP","BA/RISP",
-    "CS","SB","SB%","<3%","HHB%","WEAK%","BBS","ERA","WHIP","FIP","BB/INN","BAA"
-]
+PITCH_START_IDX = None   # e.g., 100
+PITCH_END_MARKERS = ("TC", "INN", "PB", "SB-ATT", "FPCT")  # first marker after pitching
 
-def _find_pitching_section(df: pd.DataFrame):
+def _base(col):
+    return str(col).strip().split(".", 1)[0]
+
+def _find_pitch_span(df: pd.DataFrame):
     """
-    Detect where the pitching section starts and ends based on headers.
-    Finds the first 'IP' column and runs until the next section header (TC, INN, PB).
+    Return (start_idx, end_idx) for the pitching block.
+    If PITCH_START_IDX is set, use that; otherwise find first 'IP', then stop at first fielding/catching marker.
     """
     cols = list(df.columns)
-    start = None
-    end = len(cols)
+    n = len(cols)
 
-    for i, c in enumerate(cols):
-        base = str(c).strip().split(".", 1)[0]
-        if base == "IP":
-            start = i
-            break
-
-    if start is not None:
-        for j in range(start + 1, len(cols)):
-            base = str(cols[j]).strip().split(".", 1)[0]
-            if base in ("TC", "INN", "PB"):
+    # fixed start, dynamic end (safer than fixed both)
+    if isinstance(PITCH_START_IDX, int):
+        start = max(PITCH_START_IDX, 0)
+        end = n
+        for j in range(start + 1, n):
+            if _base(cols[j]) in PITCH_END_MARKERS:
                 end = j
                 break
+        return start, end
 
+    # dynamic start at first 'IP'
+    start = None
+    for i, c in enumerate(cols):
+        if _base(c) == "IP":
+            start = i
+            break
     if start is None:
-        start = 0  # fallback
+        # fallback: keep everything; caller will still select only the needed cols later
+        return 0, n
+
+    # dynamic end at first marker after start
+    end = n
+    for j in range(start + 1, n):
+        if _base(cols[j]) in PITCH_END_MARKERS:
+            end = j
+            break
     return start, end
 
 
-def _backfill_pitching_counts(df: pd.DataFrame) -> pd.DataFrame:
-    df = df.copy()
-    for c in [col for col in df.columns if c not in ("Last","First")]:
-        df[c] = _to_num(df[c])
-
-    # Decimal innings for calculations
-    if "IP" in df.columns:
-        df["_IP_DEC"] = df["IP"].apply(_convert_innings_value)
-    else:
-        df["_IP_DEC"] = 0.0
-
-    # Batted balls = BF - SO - BB - HBP
-    BF  = _col(df, "BF")
-    SO  = _col(df, "SO")
-    BB  = _col(df, "BB")
-    HBP = _col(df, "HBP")
-    BIP = (BF - SO - BB - HBP).clip(lower=0)
-
-    # From % → counts
-    if "S%" in df.columns:
-        df["Strikes"] = np.rint(_pct_to_ratio(df["S%"]) * _col(df, "#P")).astype(float)
-    if "FPS%" in df.columns:
-        df["FirstPitchStrikes"] = np.rint(_pct_to_ratio(df["FPS%"]) * BF).astype(float)
-    if "FPSO%" in df.columns:
-        df["FPSO"] = np.rint(_pct_to_ratio(df["FPSO%"]) * BF).astype(float)
-    if "FPSH%" in df.columns:
-        df["FPSH"] = np.rint(_pct_to_ratio(df["FPSH%"]) * BF).astype(float)
-    if "SM%" in df.columns:
-        df["SwingMisses"] = np.rint(_pct_to_ratio(df["SM%"]) * _col(df, "#P")).astype(float)
-    if "LD%" in df.columns:
-        df["LineDrives"] = np.rint(_pct_to_ratio(df["LD%"]) * BIP).astype(float)
-    if "FB%" in df.columns:
-        df["FlyBalls"] = np.rint(_pct_to_ratio(df["FB%"]) * BIP).astype(float)
-    if "GB%" in df.columns:
-        df["GroundBalls"] = np.rint(_pct_to_ratio(df["GB%"]) * BIP).astype(float)
-    if "HHB%" in df.columns:
-        df["HardHitBalls"] = np.rint(_pct_to_ratio(df["HHB%"]) * BIP).astype(float)
-    if "WEAK%" in df.columns:
-        df["WeakContact"] = np.rint(_pct_to_ratio(df["WEAK%"]) * BIP).astype(float)
-    if "<3%" in df.columns:
-        df["Under3Pitches"] = np.rint(_pct_to_ratio(df["<3%"]) * BF).astype(float)
-
-    return df
-
-
-def prepare_pitching_stats(df: pd.DataFrame) -> pd.DataFrame:
-    # --- Detect and isolate pitching section dynamically ---
-    if len(df.columns) > 50:
-        s, e = _find_pitching_section(df)
-        df = df.iloc[:, [0, 1] + list(range(s, e))]
-
-    df = clean_df(df, keep="last")
-    keep = [c for c in PIT_INPUT_COLS if c in df.columns]
-    df = df[["Last","First"] + [c for c in keep if c not in ("Last","First")]].copy()
-    df = _backfill_pitching_counts(df)
-
-    # Ensure minimum columns exist
-    for _colname in ("Last","First","IP","BF"):
-        if _colname not in df.columns:
-            df[_colname] = 0
-
-    # Coerce numeric
-    for c in df.columns:
-        if c not in ("Last","First"):
-            df[c] = _to_num(df[c])
-
-    # Decimal IP
-    df["_IP_DEC"] = df["IP"].apply(_convert_innings_value) if "IP" in df.columns else 0.0
-
-    # --- Derived metrics ---
-    ER = _col(df, "ER"); H = _col(df, "H"); BB = _col(df, "BB"); SO = _col(df, "SO")
-    HR = _col(df, "HR"); P = _col(df, "#P"); BF = _col(df, "BF"); HBP = _col(df, "HBP")
-    Strikes = _col(df, "Strikes"); FPS = _col(df, "FirstPitchStrikes")
-    FPSO = _col(df, "FPSO"); FPSH = _col(df, "FPSH")
-    GB = _col(df, "GroundBalls"); FB = _col(df, "FlyBalls"); LD = _col(df, "LineDrives")
-    HHB = _col(df, "HardHitBalls"); WEAK = _col(df, "WeakContact")
-    U3 = _col(df, "Under3Pitches"); SM = _col(df, "SwingMisses")
-
-    ip_dec = _col(df, "_IP_DEC")
-    df["ERA"] = _safe_div(ER * 9.0, ip_dec).round(3)
-    df["WHIP"] = _safe_div(BB + H, ip_dec).round(3)
-    df["BB/INN"] = _safe_div(BB, ip_dec).round(3)
-    C = 3.1
-    df["FIP"] = (_safe_div(13*HR + 3*(BB + HBP) - 2*SO, ip_dec) + C).round(3)
-
-    # Recompute percentages
-    BIP = (BF - SO - BB - HBP).clip(lower=0)
-    df["S%"] = _safe_div(Strikes, P).round(3)
-    df["FPS%"] = _safe_div(FPS, BF).round(3)
-    df["FPSO%"] = _safe_div(FPSO, BF).round(3)
-    df["FPSH%"] = _safe_div(FPSH, BF).round(3)
-    df["SM%"] = _safe_div(SM, P).round(3)
-    df["LD%"] = _safe_div(LD, BIP).round(3)
-    df["FB%"] = _safe_div(FB, BIP).round(3)
-    df["GB%"] = _safe_div(GB, BIP).round(3)
-    df["HHB%"] = _safe_div(HHB, BIP).round(3)
-    df["WEAK%"] = _safe_div(WEAK, BIP).round(3)
-    df["<3%"] = _safe_div(U3, BF).round(3)
-
-    # SB%
-    SB = _col(df, "SB"); CS = _col(df, "CS")
-    df["SB%"] = np.where((SB + CS) > 0, (SB / (SB + CS)).round(3), 0.0)
-
-    # BAA, BABIP
-    df["BAA"] = _safe_div(H, BF - BB - HBP).round(3)
-    df["BABIP"] = _safe_div(H - HR, BF - SO - HR - BB - HBP).round(3)
-
-    display_cols = [
-        "Last","First","IP","ERA","WHIP","SO","K-L","H","R","ER","BB","BB/INN",
-        "FIP","S%","FPS%","FPSO%","FPSH%","BAA","BBS","SM%","LD%","FB%","GB%","BABIP",
-        "BA/RISP","CS","SB","SB%","<3%","HHB%","WEAK%","#P","BF","HBP"
+def aggregate_stats_pitching(csv_files):
+    # Base numeric columns needed for calculations
+    cols_to_keep = [
+        "IP", "ER", "H", "BB", "R", "SO", "K-L", "HR", "#P", "BF", "HBP",
+        "FPS%", "FPSO%", "FPSW%", "FPSH%", "S%", "SM%", "LD%", "FB%", "GB%",
+        "BABIP", "BA/RISP", "CS", "SB", "SB%", "<3%", "HHB%", "WEAK%", "BBS"
     ]
-    existing = [c for c in display_cols if c in df.columns]
-    return df[existing].copy()
 
+    def convert_innings(ip):
+        try:
+            ip = float(ip)
+        except Exception:
+            return 0.0
+        whole = int(ip)
+        frac = round((ip - whole) * 10)
+        if frac == 1:
+            return whole + 1/3
+        elif frac == 2:
+            return whole + 2/3
+        else:
+            return ip
 
-def aggregate_stats_pitching(series_names):
     dfs = []
-    for name in series_names:
+    for name in csv_files:
         file = f"{name}.csv"
-        if not os.path.exists(file):
-            continue
-        df_raw = _ensure_name_cols(_smart_read_csv(file))
-        s, e = _find_pitching_section(df_raw)
-        df_raw = df_raw.iloc[:, [0, 1] + list(range(s, e))]
-        df = clean_df(df_raw, keep="last")
+        # robust read: try header=1 then 0
+        try:
+            df0 = pd.read_csv(file, header=1)
+        except Exception:
+            df0 = pd.read_csv(file, header=0)
+
+        # ---- isolate true pitching block BEFORE normalizing headers ----
+        s, e = _find_pitch_span(df0)
+
+        # locate name columns (by header name, not index assumptions)
+        cols = list(df0.columns)
+        try:
+            last_idx = next(i for i, c in enumerate(cols) if _base(c) == "Last")
+        except StopIteration:
+            last_idx = 1
+        try:
+            first_idx = next(i for i, c in enumerate(cols) if _base(c) == "First")
+        except StopIteration:
+            first_idx = 2
+
+        keep_idx = sorted(set([last_idx, first_idx] + list(range(s, e))))
+        df = df0.iloc[:, keep_idx].copy()
+
+        # now normalize headers (strip .1/.2) AFTER slice so we don't collapse to hitting dupes
+        df.columns = [_base(c) for c in df.columns]
+        # de-dup within pitching slice
+        df = df.loc[:, ~pd.Index(df.columns).duplicated(keep="first")]
+
+        # Ensure name columns exist
+        if "Last" not in df.columns:
+            df["Last"] = ""
+        if "First" not in df.columns:
+            df["First"] = ""
+
+        # Keep only relevant pitching columns (that exist) + names
+        df = df[[c for c in ["Last", "First"] + cols_to_keep if c in df.columns]]
+
+        # Clean names
+        df["Last"] = df["Last"].astype(str).str.strip().str.title()
+        df["First"] = df["First"].astype(str).str.strip().str.title()
+
+        # Convert numerics (leave % as numbers in 0–100)
+        for col in df.columns:
+            if col not in ("Last", "First"):
+                df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0.0)
+
+        # innings to decimal-thirds
+        if "IP" in df.columns:
+            df["IP"] = df["IP"].apply(convert_innings)
+
+        # ===== Convert percentages to absolute counts (safe if missing) =====
+        # use .get with fill 0 to avoid KeyErrors if specific % isn't present in a file
+        df["Strikes"]            = np.rint(df.get("S%", 0)     * df.get("#P", 0) / 100.0).astype(float)
+        df["FirstPitchStrikes"]  = np.rint(df.get("FPS%", 0)   * df.get("BF", 0) / 100.0).astype(float)
+        df["FPSO"]               = np.rint(df.get("FPSO%", 0)  * df.get("BF", 0) / 100.0).astype(float)
+        df["FPSH"]               = np.rint(df.get("FPSH%", 0)  * df.get("BF", 0) / 100.0).astype(float)
+
+        bip = (df.get("BF", 0) - df.get("SO", 0) - df.get("BB", 0) - df.get("HBP", 0)).clip(lower=0)
+        df["GroundBalls"]  = np.rint(df.get("GB%", 0)   * bip / 100.0).astype(float)
+        df["FlyBalls"]     = np.rint(df.get("FB%", 0)   * bip / 100.0).astype(float)
+        df["LineDrives"]   = np.rint(df.get("LD%", 0)   * bip / 100.0).astype(float)
+        df["HardHitBalls"] = np.rint(df.get("HHB%", 0)  * bip / 100.0).astype(float)
+        df["WeakContact"]  = np.rint(df.get("WEAK%", 0) * bip / 100.0).astype(float)
+        df["Under3Pitches"]= np.rint(df.get("<3%", 0)   * df.get("BF", 0) / 100.0).astype(float)
+        df["SwingMisses"]  = np.rint(df.get("SM%", 0)   * df.get("#P", 0) / 100.0).astype(float)
+
+        # Drop original % columns so we don't average percentages across series
+        pct_cols = [c for c in df.columns if isinstance(c, str) and c.endswith("%")]
+        df.drop(columns=pct_cols, inplace=True, errors="ignore")
+
         dfs.append(df)
 
     if not dfs:
-        return pd.DataFrame(columns=PIT_INPUT_COLS)
+        return pd.DataFrame(columns=["Last","First"] + cols_to_keep)
 
+    # ===== Combine and aggregate by player =====
     combined = pd.concat(dfs, ignore_index=True)
-    combined = clean_df(combined, keep="last")
-    return combined
+
+    # Group by player and sum all numeric values
+    agg_df = (
+        combined.groupby(["Last", "First"], as_index=False)
+        .sum(numeric_only=True)
+    )
+
+    # round to 3 for display, keep as float
+    for col in agg_df.columns:
+        if col not in ("Last", "First"):
+            agg_df[col] = pd.to_numeric(agg_df[col], errors="coerce").fillna(0.0).round(3)
+
+    return agg_df
 
 
-def generate_aggregated_pitching_df(df_raw: pd.DataFrame) -> pd.DataFrame:
-    df_raw = df_raw.copy()
-    s, e = _find_pitching_section(df_raw)
-    df_raw = df_raw.iloc[:, [0, 1] + list(range(s, e))]
-    df = clean_df(df_raw, keep="last")
-    df = _backfill_pitching_counts(df)
+def generate_aggregated_pitching_df(df):
+    columns_to_keep = [
+        "Last", "First", "IP", "ERA", "WHIP", "SO", "K-L", "H", "R", "ER", "BB", "BB/INN",
+        "FIP", "S%", "FPS%", "FPSO%", "FPSH%", "BAA", "BBS", "SM%", "LD%", "FB%", "GB%",
+        "BABIP", "BA/RISP", "CS", "SB", "SB%", "<3%", "HHB%", "WEAK%"
+    ]
 
-    for _colname in ("Last","First","IP","BF"):
-        if _colname not in df.columns:
-            df[_colname] = 0
+    df = df.copy()
 
-    for c in df.columns:
-        if c not in ("Last","First"):
-            df[c] = _to_num(df[c])
+    # Ensure needed numeric sources exist
+    for col in [
+        "IP", "ER", "H", "BB", "SO", "K-L", "HR", "#P", "BF", "HBP",
+        "Strikes", "FirstPitchStrikes", "FPSO", "FPSH",
+        "GroundBalls", "FlyBalls", "LineDrives", "HardHitBalls", "WeakContact",
+        "Under3Pitches", "SwingMisses", "BBS", "CS", "SB"
+    ]:
+        if col not in df.columns:
+            df[col] = 0.0
 
-    agg = df.groupby(["Last","First"], as_index=False).sum(numeric_only=True)
-    agg = _drop_rows_nan_names(clean_df(agg, keep="last"))
-    return prepare_pitching_stats(agg)
+    # Avoid divide-by-zero in derived rates
+    ip = df["IP"].replace(0, np.nan)
+    bf = df["BF"].replace(0, np.nan)
+    p  = df["#P"].replace(0, np.nan)
+
+    # ERA / WHIP / BB/INN / FIP
+    df["ERA"]    = ((df["ER"] * 9) / ip).round(2)
+    df["WHIP"]   = ((df["BB"] + df["H"]) / ip).round(2)
+    df["BB/INN"] = (df["BB"] / ip).round(2)
+    df["FIP"]    = (((13*df["HR"]) + (3*df["BB"]) - (2*df["SO"])) / ip + 3.1).round(2)
+
+    # Percentages from counts (expressed as %) for your display spec
+    df["S%"]     = (df["Strikes"] / p * 100).round(2)
+    df["FPS%"]   = (df["FirstPitchStrikes"] / bf * 100).round(2)
+    df["FPSO%"]  = (df["FPSO"] / bf * 100).round(2)
+    df["FPSH%"]  = (df["FPSH"] / bf * 100).round(2)
+    df["SM%"]    = (df["SwingMisses"] / p * 100).round(2)
+
+    bip = (df["BF"] - df["SO"] - df["BB"] - df["HBP"])
+    bip = bip.where(bip > 0, np.nan)
+    df["LD%"]    = (df["LineDrives"]   / bip * 100).round(2)
+    df["FB%"]    = (df["FlyBalls"]     / bip * 100).round(2)
+    df["GB%"]    = (df["GroundBalls"]  / bip * 100).round(2)
+    df["HHB%"]   = (df["HardHitBalls"] / bip * 100).round(2)
+    df["WEAK%"]  = (df["WeakContact"]  / bip * 100).round(2)
+    df["<3%"]    = (df["Under3Pitches"] / bf * 100).round(2)
+
+    # SB%
+    attempts = (df["SB"] + df["CS"])
+    df["SB%"] = np.where(attempts > 0, (df["SB"] / attempts * 100).round(1), 0.0)
+
+    # BAA, BABIP
+    df["BAA"]   = np.where((df["BF"] - df["BB"] - df["HBP"]) > 0,
+                           (df["H"] / (df["BF"] - df["BB"] - df["HBP"])).round(3), 0.0)
+    df["BABIP"] = np.where((df["BF"] - df["SO"] - df["HR"] - df["BB"] - df["HBP"]) > 0,
+                           ((df["H"] - df["HR"]) / (df["BF"] - df["SO"] - df["HR"] - df["BB"] - df["HBP"])).round(3), 0.0)
+
+    # BA/RISP not computable here -> leave as 0 unless you feed it
+    if "BA/RISP" not in df.columns:
+        df["BA/RISP"] = 0.0
+
+    # Final selection / cleanup
+    for col in columns_to_keep:
+        if col not in df.columns:
+            df[col] = 0.0
+
+    df = df[columns_to_keep].copy()
+    return df.fillna(0).round(3)
 
 # =====================================================
 # FIELDING
