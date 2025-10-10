@@ -1031,10 +1031,9 @@ def _append_totals(df: pd.DataFrame, tab_name: str) -> pd.DataFrame:
 # =====================================================
 # UI LAYOUT (same format/end product)
 # =====================================================
-st.set_page_config(page_title="EUCB Team Stats (PBDB-Logic Build)", layout="wide")
+st.set_page_config(page_title="EUCB Stats (Fall 2025)", layout="wide")
 
-st.title("EUCB Team Stats (PBDB-Logic Build)")
-st.caption("Cumulative or Series-aggregated view with percent-columns backfilled to counts before combining, then rates recalculated.")
+st.title("EUCB Stats (Fall 2025)")
 
 with st.sidebar:
     st.header("Filters")
