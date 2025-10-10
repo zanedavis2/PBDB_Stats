@@ -554,40 +554,30 @@ def prepare_catching_stats(df: pd.DataFrame) -> pd.DataFrame:
     df = df[["Last","First"] + [c for c in keep if c not in ("Last","First")]].copy()
 
     # --- Parse SB-ATT before numeric coercion ---
+    sb_allowed = None
+    attempts = None
     if "SB-ATT" in df.columns:
-        # Build numeric SB allowed and ATT from strings like "5-5"
         parsed = df["SB-ATT"].apply(_parse_sb_att)
-        df["_SB_ALLOWED"] = parsed.apply(lambda t: t[0])
-        df["_ATTEMPTS"]   = parsed.apply(lambda t: t[1])
-        # Keep display column as attempts
-        df["SB-ATT"] = df["_ATTEMPTS"]
-
-        # If CS missing or zero, compute CS = ATTEMPTS - SB_ALLOWED
-        if "CS" not in df.columns:
-            df["CS"] = df["_ATTEMPTS"] - df["_SB_ALLOWED"]
-        else:
-            cs_num = pd.to_numeric(df["CS"], errors="coerce").fillna(0.0)
-            need = cs_num == 0
-            df.loc[need, "CS"] = (df.loc[need, "_ATTEMPTS"] - df.loc[need, "_SB_ALLOWED"]).astype(float)
+        sb_allowed = parsed.apply(lambda t: float(t[0]))
+        attempts   = parsed.apply(lambda t: float(t[1]))
+        # Display column is attempts
+        df["SB-ATT"] = attempts
+        # Always recompute CS from parsed values to avoid dup-column mixups
+        df["CS"] = (attempts - sb_allowed).astype(float)
 
     # Now coerce numerics
     for c in df.columns:
         if c not in ("Last","First"):
             df[c] = _to_num(df[c])
 
-    # Compute CS% if missing or zero
+    # Compute CS% from numeric columns
     if "CS%" not in df.columns:
         df["CS%"] = 0.0
-    att = df["SB-ATT"] if "SB-ATT" in df.columns else 0.0
-    cs = df["CS"] if "CS" in df.columns else 0.0
+    att = _to_num(df["SB-ATT"]) if "SB-ATT" in df.columns else 0.0
+    cs  = _to_num(df["CS"]) if "CS" in df.columns else 0.0
     with np.errstate(divide='ignore', invalid='ignore'):
-        cs_pct = np.where(_to_num(att) > 0, _to_num(cs) / _to_num(att), 0.0)
-    df["CS%"] = cs_pct.round(3)
-
-    # Clean up helper cols if they exist
-    for helper in ["_SB_ALLOWED","_ATTEMPTS"]:
-        if helper in df.columns:
-            df.drop(columns=[helper], inplace=True)
+        cs_pct = np.where(att > 0, cs / att, 0.0)
+    df["CS%"] = _to_num(cs_pct).round(3)
 
     display_cols = ["Last","First","INN","PB","SB-ATT","CS","CS%"]
     existing = [c for c in display_cols if c in df.columns]
