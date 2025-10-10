@@ -378,9 +378,36 @@ PIT_INPUT_COLS = [
     "CS","SB","SB%","<3%","HHB%","WEAK%","BBS","ERA","WHIP","FIP","BB/INN","BAA"
 ]
 
+def _find_pitching_section(df: pd.DataFrame):
+    """
+    Detect where the pitching section starts and ends based on headers.
+    Finds the first 'IP' column and runs until the next section header (TC, INN, PB).
+    """
+    cols = list(df.columns)
+    start = None
+    end = len(cols)
+
+    for i, c in enumerate(cols):
+        base = str(c).strip().split(".", 1)[0]
+        if base == "IP":
+            start = i
+            break
+
+    if start is not None:
+        for j in range(start + 1, len(cols)):
+            base = str(cols[j]).strip().split(".", 1)[0]
+            if base in ("TC", "INN", "PB"):
+                end = j
+                break
+
+    if start is None:
+        start = 0  # fallback
+    return start, end
+
+
 def _backfill_pitching_counts(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
-    for c in [col for col in df.columns if col not in ("Last","First")]:
+    for c in [col for col in df.columns if c not in ("Last","First")]:
         df[c] = _to_num(df[c])
 
     # Decimal innings for calculations
@@ -396,7 +423,7 @@ def _backfill_pitching_counts(df: pd.DataFrame) -> pd.DataFrame:
     HBP = _col(df, "HBP")
     BIP = (BF - SO - BB - HBP).clip(lower=0)
 
-    # From % → counts (robust to scale 0-1 or 0-100)
+    # From % → counts
     if "S%" in df.columns:
         df["Strikes"] = np.rint(_pct_to_ratio(df["S%"]) * _col(df, "#P")).astype(float)
     if "FPS%" in df.columns:
@@ -422,13 +449,19 @@ def _backfill_pitching_counts(df: pd.DataFrame) -> pd.DataFrame:
 
     return df
 
+
 def prepare_pitching_stats(df: pd.DataFrame) -> pd.DataFrame:
-    if len(df.columns) > 140:
-        df = df.iloc[:, [0, 1] + list(range(53, 148))]
-    df = clean_df(df)
+    # --- Detect and isolate pitching section dynamically ---
+    if len(df.columns) > 50:
+        s, e = _find_pitching_section(df)
+        df = df.iloc[:, [0, 1] + list(range(s, e))]
+
+    df = clean_df(df, keep="last")
     keep = [c for c in PIT_INPUT_COLS if c in df.columns]
     df = df[["Last","First"] + [c for c in keep if c not in ("Last","First")]].copy()
     df = _backfill_pitching_counts(df)
+
+    # Ensure minimum columns exist
     for _colname in ("Last","First","IP","BF"):
         if _colname not in df.columns:
             df[_colname] = 0
@@ -441,7 +474,7 @@ def prepare_pitching_stats(df: pd.DataFrame) -> pd.DataFrame:
     # Decimal IP
     df["_IP_DEC"] = df["IP"].apply(_convert_innings_value) if "IP" in df.columns else 0.0
 
-    # Derive core if missing / recompute from counts
+    # --- Derived metrics ---
     ER = _col(df, "ER"); H = _col(df, "H"); BB = _col(df, "BB"); SO = _col(df, "SO")
     HR = _col(df, "HR"); P = _col(df, "#P"); BF = _col(df, "BF"); HBP = _col(df, "HBP")
     Strikes = _col(df, "Strikes"); FPS = _col(df, "FirstPitchStrikes")
@@ -457,7 +490,7 @@ def prepare_pitching_stats(df: pd.DataFrame) -> pd.DataFrame:
     C = 3.1
     df["FIP"] = (_safe_div(13*HR + 3*(BB + HBP) - 2*SO, ip_dec) + C).round(3)
 
-    # Recompute percentages from counts
+    # Recompute percentages
     BIP = (BF - SO - BB - HBP).clip(lower=0)
     df["S%"] = _safe_div(Strikes, P).round(3)
     df["FPS%"] = _safe_div(FPS, BF).round(3)
@@ -479,7 +512,6 @@ def prepare_pitching_stats(df: pd.DataFrame) -> pd.DataFrame:
     df["BAA"] = _safe_div(H, BF - BB - HBP).round(3)
     df["BABIP"] = _safe_div(H - HR, BF - SO - HR - BB - HBP).round(3)
 
-    # Keep the display order
     display_cols = [
         "Last","First","IP","ERA","WHIP","SO","K-L","H","R","ER","BB","BB/INN",
         "FIP","S%","FPS%","FPSO%","FPSH%","BAA","BBS","SM%","LD%","FB%","GB%","BABIP",
@@ -488,32 +520,44 @@ def prepare_pitching_stats(df: pd.DataFrame) -> pd.DataFrame:
     existing = [c for c in display_cols if c in df.columns]
     return df[existing].copy()
 
+
 def aggregate_stats_pitching(series_names):
     dfs = []
     for name in series_names:
         file = f"{name}.csv"
         if not os.path.exists(file):
             continue
-        df = _ensure_name_cols(_smart_read_csv(file))
+        df_raw = _ensure_name_cols(_smart_read_csv(file))
+        s, e = _find_pitching_section(df_raw)
+        df_raw = df_raw.iloc[:, [0, 1] + list(range(s, e))]
+        df = clean_df(df_raw, keep="last")
         dfs.append(df)
+
     if not dfs:
         return pd.DataFrame(columns=PIT_INPUT_COLS)
+
     combined = pd.concat(dfs, ignore_index=True)
-    return _drop_rows_nan_names(clean_df(combined))
+    combined = clean_df(combined, keep="last")
+    return combined
+
 
 def generate_aggregated_pitching_df(df_raw: pd.DataFrame) -> pd.DataFrame:
     df_raw = df_raw.copy()
-    df_raw = df_raw.iloc[:, [0, 1] + list(range(53, 148))]
-    df = clean_df(df_raw)
+    s, e = _find_pitching_section(df_raw)
+    df_raw = df_raw.iloc[:, [0, 1] + list(range(s, e))]
+    df = clean_df(df_raw, keep="last")
     df = _backfill_pitching_counts(df)
+
     for _colname in ("Last","First","IP","BF"):
         if _colname not in df.columns:
             df[_colname] = 0
+
     for c in df.columns:
         if c not in ("Last","First"):
             df[c] = _to_num(df[c])
+
     agg = df.groupby(["Last","First"], as_index=False).sum(numeric_only=True)
-    agg = _drop_rows_nan_names(clean_df(agg))
+    agg = _drop_rows_nan_names(clean_df(agg, keep="last"))
     return prepare_pitching_stats(agg)
 
 # =====================================================
