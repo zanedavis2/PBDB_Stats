@@ -115,34 +115,10 @@ def _convert_innings_value(ip):
     except Exception:
         return np.nan
 
-def _is_nanlike_series(s: pd.Series) -> pd.Series:
-    """Return boolean Series where entries are NaN-ish: NaN, empty, or strings like 'nan', 'none', 'null' (case-insensitive)."""
-    s_str = s.astype(str).str.strip()
-    return (
-        s.isna()
-        | s_str.eq("")
-        | s_str.str.lower().isin({"nan", "none", "null", "n/a", "na"})
-    )
-
-def _drop_rows_nan_names(df: pd.DataFrame) -> pd.DataFrame:
-    if not {"Last","First"}.issubset(df.columns):
-        return df
-    last_raw = df["Last"]
-    first_raw = df["First"]
-    last_is_nan = _is_nanlike_series(last_raw)
-    first_is_nan = _is_nanlike_series(first_raw)
-    # drop when BOTH are nan-like
-    keep = ~(last_is_nan & first_is_nan)
-    return df.loc[keep].copy()
-
-def clean_df(df: pd.DataFrame, keep: str = "first") -> pd.DataFrame:
-    """
-    Normalize headers, drop duplicate columns.
-    keep: 'first' (default) or 'last' — which duplicate to keep when names collide.
-    """
+def clean_df(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
     df.columns = [str(c).replace(".1", "").replace(".2", "").strip() for c in df.columns]
-    df = df.loc[:, ~pd.Index(df.columns).duplicated(keep=keep)]
+    df = df.loc[:, ~pd.Index(df.columns).duplicated(keep="first")]
     if "Last" not in df.columns: df["Last"] = ""
     if "First" not in df.columns: df["First"] = ""
 
@@ -237,55 +213,27 @@ def _pitching_ip_gt_zero(df: pd.DataFrame) -> pd.DataFrame:
     ip_dec = pd.to_numeric(df["IP"].apply(_convert_innings_value), errors="coerce").fillna(0.0)
     return df[ip_dec > 0.0].reset_index(drop=True)
 
-# --- Pitching block slicer ---
-def _select_pitching_view(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Prefer positional slice [1,2] + [53:148] to isolate Pitching.
-    If that fails to contain 'IP', fall back to detecting the IP→(TC/INN/PB) block.
-    """
-    df0 = df.copy()
-    ncols = df0.shape[1]
 
-    # guard for short files
-    i_last = 1 if ncols > 1 else 0
-    j_first = 2 if ncols > 2 else min(1, ncols-1)
 
-    # primary: positional
-    sl_left = [i_last, j_first] if ncols >= 3 else list(range(min(2, ncols)))
-    sl_right = list(range(53, min(148, ncols)))  # clamp width
-    cols_idx = sorted(set(sl_left + sl_right))
-    df_pos = df0.iloc[:, cols_idx].copy()
+def _is_nanlike_series(s: pd.Series) -> pd.Series:
+    """Return boolean Series where entries are NaN-ish: NaN, empty, or strings like 'nan', 'none', 'null' (case-insensitive)."""
+    s_str = s.astype(str).str.strip()
+    return (
+        s.isna()
+        | s_str.eq("")
+        | s_str.str.lower().isin({"nan", "none", "null", "n/a", "na"})
+    )
 
-    # Does this slice include IP?
-    if any(str(c).split(".",1)[0].strip() == "IP" for c in df_pos.columns):
-        return df_pos
-
-    # fallback: detect block
-    def _base(c): return str(c).strip().split(".", 1)[0]
-    cols = list(df0.columns)
-    pitch_start = next((i for i,c in enumerate(cols) if _base(c) == "IP"), None)
-    if pitch_start is None:
-        return df_pos
-
-    pitch_end = len(cols)
-    for j in range(pitch_start+1, len(cols)):
-        b = _base(cols[j])
-        if b in ("TC", "INN", "PB"):
-            pitch_end = j
-            break
-
-    name_idxs = []
-    try:
-        name_idxs.append(next(i for i,c in enumerate(cols) if _base(c)=="Last"))
-    except StopIteration:
-        name_idxs.append(0)
-    try:
-        name_idxs.append(next(i for i,c in enumerate(cols) if _base(c)=="First"))
-    except StopIteration:
-        name_idxs.append(1 if ncols>1 else 0)
-
-    keep_idx = sorted(set(name_idxs + list(range(pitch_start, pitch_end))))
-    return df0.iloc[:, keep_idx].copy()
+def _drop_rows_nan_names(df: pd.DataFrame) -> pd.DataFrame:
+    if not {"Last","First"}.issubset(df.columns):
+        return df
+    last_raw = df["Last"]
+    first_raw = df["First"]
+    last_is_nan = _is_nanlike_series(last_raw)
+    first_is_nan = _is_nanlike_series(first_raw)
+    # drop when BOTH are nan-like
+    keep = ~(last_is_nan & first_is_nan)
+    return df.loc[keep].copy()
 
 # =====================================================
 # HITTING
@@ -299,7 +247,7 @@ HIT_INPUT_COLS = [
 def _backfill_hitting_counts(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
     # Coerce known numeric cols
-    for c in [col for col in df.columns if c not in ("Last","First")]:
+    for c in [col for col in df.columns if col not in ("Last","First")]:
         df[c] = _to_num(df[c])
 
     # Balls in play (for LD/FB/GB)
@@ -475,8 +423,8 @@ def _backfill_pitching_counts(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 def prepare_pitching_stats(df: pd.DataFrame) -> pd.DataFrame:
-    # IMPORTANT: when given a mixed-sheet (like cumulative), prefer last duplicates
-    df = clean_df(df, keep="last")
+    df = df.iloc[:, [0, 1] + list(range(53, 148))]
+    df = clean_df(df)
     keep = [c for c in PIT_INPUT_COLS if c in df.columns]
     df = df[["Last","First"] + [c for c in keep if c not in ("Last","First")]].copy()
     df = _backfill_pitching_counts(df)
@@ -545,33 +493,24 @@ def aggregate_stats_pitching(series_names):
         file = f"{name}.csv"
         if not os.path.exists(file):
             continue
-        df_raw = _ensure_name_cols(_smart_read_csv(file))
-        df_pitch = _select_pitching_view(df_raw)     # isolate pitching
-        df_pitch = clean_df(df_pitch, keep="last")   # prefer pitching duplicates
-        dfs.append(df_pitch)
-
+        df = _ensure_name_cols(_smart_read_csv(file))
+        dfs.append(df)
     if not dfs:
         return pd.DataFrame(columns=PIT_INPUT_COLS)
-
     combined = pd.concat(dfs, ignore_index=True)
-    combined = clean_df(combined, keep="last")
-    return combined
+    return _drop_rows_nan_names(clean_df(combined))
 
-def generate_aggregated_pitching_df(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Takes a combined raw pitching dataframe (possibly across series),
-    aggregates by player (sum counts), then recomputes derived metrics.
-    """
-    if df.empty:
-        return df
-    df = clean_df(df, keep="last")
-    # ensure numeric for counts
+def generate_aggregated_pitching_df(df_raw: pd.DataFrame) -> pd.DataFrame:
+    df = clean_df(df_raw)
+    df = _backfill_pitching_counts(df)
+    for _colname in ("Last","First","IP","BF"):
+        if _colname not in df.columns:
+            df[_colname] = 0
     for c in df.columns:
         if c not in ("Last","First"):
             df[c] = _to_num(df[c])
-    # aggregate
     agg = df.groupby(["Last","First"], as_index=False).sum(numeric_only=True)
-    # recompute derived metrics on aggregated counts
+    agg = _drop_rows_nan_names(clean_df(agg))
     return prepare_pitching_stats(agg)
 
 # =====================================================
@@ -609,34 +548,6 @@ def aggregate_stats_fielding(series_names):
 # CATCHING
 # =====================================================
 CAT_INPUT_COLS = ["Last","First","INN","PB","SB-ATT","CS","CS%"]
-
-def _parse_sb_att(value):
-    """
-    Parse catcher 'SB-ATT' strings like '5-5' (SB-ATT) into (sb_allowed, attempts).
-    Returns (sb_allowed, attempts) as floats. Handles None/NaN/empty gracefully.
-    Accepts dashes '-', '–', '—', with/without spaces.
-    """
-    try:
-        if pd.isna(value):
-            return 0.0, 0.0
-        s = str(value).strip()
-        if not s:
-            return 0.0, 0.0
-        s = s.replace("—", "-").replace("–", "-")
-        if "-" in s:
-            parts = [p.strip() for p in s.split("-", 1)]
-            if len(parts) == 2:
-                sb = float(pd.to_numeric(parts[0], errors="coerce"))
-                att = float(pd.to_numeric(parts[1], errors="coerce"))
-                sb = 0.0 if pd.isna(sb) else sb
-                att = 0.0 if pd.isna(att) else att
-                return sb, att
-        # If it's a single number, treat as attempts, 0 SB allowed
-        att = float(pd.to_numeric(s, errors="coerce"))
-        att = 0.0 if pd.isna(att) else att
-        return 0.0, att
-    except Exception:
-        return 0.0, 0.0
 
 def prepare_catching_stats(df: pd.DataFrame) -> pd.DataFrame:
     df = clean_df(df)
@@ -715,19 +626,12 @@ def load_cumulative():
         return {"Hitting": pd.DataFrame(),"Pitching": pd.DataFrame(),
                 "Fielding": pd.DataFrame(),"Catching": pd.DataFrame()}
     raw = pd.read_csv("cumulative.csv", header=1)
-
-    # Hitting/Fielding/Catching can use standard cleaning
-    raw_clean = clean_df(raw, keep="first")
-
-    # Pitching should be carved out BEFORE cleaning to avoid keeping hitter dupes
-    raw_pitch = _select_pitching_view(raw)              # isolate the pitching block
-    raw_pitch = clean_df(raw_pitch, keep="last")        # prefer pitching duplicates
-
+    raw = clean_df(raw)
     return {
-        "Hitting":  prepare_batting_stats(raw_clean.copy()),
-        "Pitching": prepare_pitching_stats(raw_pitch.copy()),
-        "Fielding": prepare_fielding_stats(raw_clean.copy()),
-        "Catching": prepare_catching_stats(raw_clean.copy()),
+        "Hitting":  prepare_batting_stats(raw.copy()),
+        "Pitching": prepare_pitching_stats(raw.copy()),
+        "Fielding": prepare_fielding_stats(raw.copy()),
+        "Catching": prepare_catching_stats(raw.copy()),
     }
 
 @st.cache_data(show_spinner=False)
@@ -797,8 +701,39 @@ def filter_qualified_frames(frames: dict, mins: dict) -> dict:
         out["Catching"] = df
     return out
 
+
+
 # =====================================================
 # TOTALS ROW HELPERS
+
+def _parse_sb_att(value):
+    """
+    Parse catcher 'SB-ATT' strings like '5-5' (SB-ATT) into (sb_allowed, attempts).
+    Returns (sb_allowed, attempts) as floats. Handles None/NaN/empty gracefully.
+    Accepts dashes '-', '–', '—', with/without spaces.
+    """
+    try:
+        if pd.isna(value):
+            return 0.0, 0.0
+        s = str(value).strip()
+        if not s:
+            return 0.0, 0.0
+        s = s.replace("—", "-").replace("–", "-")
+        if "-" in s:
+            parts = [p.strip() for p in s.split("-", 1)]
+            if len(parts) == 2:
+                sb = float(pd.to_numeric(parts[0], errors="coerce"))
+                att = float(pd.to_numeric(parts[1], errors="coerce"))
+                sb = 0.0 if pd.isna(sb) else sb
+                att = 0.0 if pd.isna(att) else att
+                return sb, att
+        # If it's a single number, treat as attempts, 0 SB allowed
+        att = float(pd.to_numeric(s, errors="coerce"))
+        att = 0.0 if pd.isna(att) else att
+        return 0.0, att
+    except Exception:
+        return 0.0, 0.0
+
 # =====================================================
 def _dec_to_baseball_tenths(ip_dec: float) -> float:
     """
@@ -1111,90 +1046,3 @@ for tab_name, tab in zip(tabs_to_show, tabs):
         elif tab_name == "Catching":
             with st.expander("Catching Acronym Key", expanded=False):
                 st.dataframe(CATCHING_KEY, use_container_width=True, hide_index=True)
-
-
-# --- PATCH START: safer _backfill_hitting_counts and load_cumulative guards ---
-def _backfill_hitting_counts(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Coerce numerics and reconstruct LD/FB/GB, QAB, HHB from % columns when counts are missing.
-    Extra guards added to avoid NameError/KeyError if unexpected headers appear.
-    """
-    if df is None or not isinstance(df, pd.DataFrame) or df.empty:
-        return pd.DataFrame(columns=HIT_INPUT_COLS)
-
-    df = df.copy()
-
-    # Ensure name columns exist
-    if "Last" not in df.columns: df["Last"] = ""
-    if "First" not in df.columns: df["First"] = ""
-
-    # Coerce numeric-like columns (skip names)
-    for c_name in list(df.columns):
-        if c_name not in ("Last", "First"):
-            df[c_name] = _to_num(df[c_name]) if c_name in df.columns else 0.0
-
-    # Base columns with safe defaults
-    AB  = _col(df, "AB")
-    SO  = _col(df, "SO")
-    HR  = _col(df, "HR")
-    SF  = _col(df, "SF")
-    BIP = (AB - SO - HR + SF).clip(lower=0)
-
-    # Reconstruct LD/FB/GB from % if missing or zero totals
-    for stat in ("LD", "FB", "GB"):
-        pct_col = f"{stat}%"
-        need_counts = (stat not in df.columns) or (_to_num(df.get(stat, 0)).sum() == 0)
-        if need_counts and (pct_col in df.columns):
-            ratio = _pct_to_ratio(df[pct_col])
-            # Align to index just in case
-            if isinstance(ratio, np.ndarray):
-                ratio = pd.Series(ratio, index=df.index)
-            df[stat] = np.rint(ratio * BIP).astype(float)
-
-    # QAB from QAB% * PA
-    if ("QAB" not in df.columns or _to_num(df.get("QAB", 0)).sum() == 0) and "QAB%" in df.columns:
-        df["QAB"] = np.rint(_pct_to_ratio(df["QAB%"]) * _col(df, "PA")).astype(float)
-
-    # HHB from HHB% * AB (fallback to PA)
-    if ("HHB" not in df.columns or _to_num(df.get("HHB", 0)).sum() == 0) and "HHB%" in df.columns:
-        base = _col(df, "AB")
-        base = np.where(base > 0, base, _col(df, "PA"))
-        df["HHB"] = np.rint(_pct_to_ratio(df["HHB%"]) * base).astype(float)
-
-    return df
-
-# Guard inside load_cumulative to prevent mixed-sheet surprises from breaking Hitting prep
-_old_load_cumulative = load_cumulative
-@st.cache_data(show_spinner=False)
-def load_cumulative():
-    if not os.path.exists("cumulative.csv"):
-        return {"Hitting": pd.DataFrame(),"Pitching": pd.DataFrame(),
-                "Fielding": pd.DataFrame(),"Catching": pd.DataFrame()}
-    try:
-        raw = pd.read_csv("cumulative.csv", header=1)
-    except Exception:
-        raw = pd.read_csv("cumulative.csv", header=0)
-
-    # Hitting/Fielding/Catching use standard cleaning
-    raw_clean = clean_df(raw, keep="first")
-
-    # Pitching carved out BEFORE cleaning
-    raw_pitch = _select_pitching_view(raw)
-    raw_pitch = clean_df(raw_pitch, keep="last")
-
-    # Extra: ensure required minimal columns exist before prepare_* calls
-    for col in ("Last","First","PA","AB"):
-        if col not in raw_clean.columns:
-            raw_clean[col] = 0
-    for col in ("Last","First","IP","BF"):
-        if col not in raw_pitch.columns:
-            raw_pitch[col] = 0
-
-    return {
-        "Hitting":  prepare_batting_stats(raw_clean.copy()),
-        "Pitching": prepare_pitching_stats(raw_pitch.copy()),
-        "Fielding": prepare_fielding_stats(raw_clean.copy()),
-        "Catching": prepare_catching_stats(raw_clean.copy()),
-    }
-# --- PATCH END ---
-
