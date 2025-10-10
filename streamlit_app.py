@@ -423,7 +423,8 @@ def _backfill_pitching_counts(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 def prepare_pitching_stats(df: pd.DataFrame) -> pd.DataFrame:
-    df = df.iloc[:, [0, 1] + list(range(53, 148))]
+    if len(df.columns) > 140:
+        df = df.iloc[:, [0, 1] + list(range(53, 148))]
     df = clean_df(df)
     keep = [c for c in PIT_INPUT_COLS if c in df.columns]
     df = df[["Last","First"] + [c for c in keep if c not in ("Last","First")]].copy()
@@ -501,6 +502,8 @@ def aggregate_stats_pitching(series_names):
     return _drop_rows_nan_names(clean_df(combined))
 
 def generate_aggregated_pitching_df(df_raw: pd.DataFrame) -> pd.DataFrame:
+    df_raw = df_raw.copy()
+    df_raw = df_raw.iloc[:, [0, 1] + list(range(53, 148))]
     df = clean_df(df_raw)
     df = _backfill_pitching_counts(df)
     for _colname in ("Last","First","IP","BF"):
