@@ -121,8 +121,20 @@ def clean_df(df: pd.DataFrame) -> pd.DataFrame:
     df = df.loc[:, ~pd.Index(df.columns).duplicated(keep="first")]
     if "Last" not in df.columns: df["Last"] = ""
     if "First" not in df.columns: df["First"] = ""
-    df["Last"] = df["Last"].astype(str).str.strip().str.title()
-    df["First"] = df["First"].astype(str).str.strip().str.title()
+
+    # Capture raw strings before title-casing so we can detect 'nan' reliably
+    last_raw = df["Last"].astype(str).str.strip()
+    first_raw = df["First"].astype(str).str.strip()
+
+    # Drop rows where BOTH names are NaN-ish (actual NaN or literal 'nan' string in any case)
+    last_is_nanlike = last_raw.str.lower().eq("nan") | last_raw.eq("")
+    first_is_nanlike = first_raw.str.lower().eq("nan") | first_raw.eq("")
+    mask_keep = ~(last_is_nanlike & first_is_nanlike)
+    df = df.loc[mask_keep].copy()
+
+    # Now pretty format names
+    df["Last"] = last_raw.loc[mask_keep].str.title()
+    df["First"] = first_raw.loc[mask_keep].str.title()
     return df
 
 def _smart_read_csv(path: str) -> pd.DataFrame:
@@ -339,6 +351,7 @@ def generate_aggregated_hitting_df(df_raw: pd.DataFrame) -> pd.DataFrame:
     # aggregate by player (sum counts)
     agg = df.groupby(["Last","First"], as_index=False).sum(numeric_only=True)
     # recompute rates on combined (fresh averages)
+    agg = clean_df(agg)
     return prepare_batting_stats(agg)
 
 # =====================================================
@@ -481,6 +494,7 @@ def generate_aggregated_pitching_df(df_raw: pd.DataFrame) -> pd.DataFrame:
         if c not in ("Last","First"):
             df[c] = _to_num(df[c])
     agg = df.groupby(["Last","First"], as_index=False).sum(numeric_only=True)
+    agg = clean_df(agg)
     return prepare_pitching_stats(agg)
 
 # =====================================================
