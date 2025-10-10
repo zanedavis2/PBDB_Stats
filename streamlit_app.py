@@ -552,11 +552,43 @@ def prepare_catching_stats(df: pd.DataFrame) -> pd.DataFrame:
     df = clean_df(df)
     keep = [c for c in CAT_INPUT_COLS if c in df.columns]
     df = df[["Last","First"] + [c for c in keep if c not in ("Last","First")]].copy()
+
+    # --- Parse SB-ATT before numeric coercion ---
+    if "SB-ATT" in df.columns:
+        # Build numeric SB allowed and ATT from strings like "5-5"
+        parsed = df["SB-ATT"].apply(_parse_sb_att)
+        df["_SB_ALLOWED"] = parsed.apply(lambda t: t[0])
+        df["_ATTEMPTS"]   = parsed.apply(lambda t: t[1])
+        # Keep display column as attempts
+        df["SB-ATT"] = df["_ATTEMPTS"]
+
+        # If CS missing or zero, compute CS = ATTEMPTS - SB_ALLOWED
+        if "CS" not in df.columns:
+            df["CS"] = df["_ATTEMPTS"] - df["_SB_ALLOWED"]
+        else:
+            cs_num = pd.to_numeric(df["CS"], errors="coerce").fillna(0.0)
+            need = cs_num == 0
+            df.loc[need, "CS"] = (df.loc[need, "_ATTEMPTS"] - df.loc[need, "_SB_ALLOWED"]).astype(float)
+
+    # Now coerce numerics
     for c in df.columns:
         if c not in ("Last","First"):
             df[c] = _to_num(df[c])
-    if "CS%" not in df.columns and {"SB-ATT","CS"}.issubset(df.columns):
-        df["CS%"] = _safe_div(_col(df, "CS"), _col(df, "SB-ATT")).round(3)
+
+    # Compute CS% if missing or zero
+    if "CS%" not in df.columns:
+        df["CS%"] = 0.0
+    att = df["SB-ATT"] if "SB-ATT" in df.columns else 0.0
+    cs = df["CS"] if "CS" in df.columns else 0.0
+    with np.errstate(divide='ignore', invalid='ignore'):
+        cs_pct = np.where(_to_num(att) > 0, _to_num(cs) / _to_num(att), 0.0)
+    df["CS%"] = cs_pct.round(3)
+
+    # Clean up helper cols if they exist
+    for helper in ["_SB_ALLOWED","_ATTEMPTS"]:
+        if helper in df.columns:
+            df.drop(columns=[helper], inplace=True)
+
     display_cols = ["Last","First","INN","PB","SB-ATT","CS","CS%"]
     existing = [c for c in display_cols if c in df.columns]
     return df[existing].copy()
@@ -672,6 +704,35 @@ def filter_qualified_frames(frames: dict, mins: dict) -> dict:
 
 # =====================================================
 # TOTALS ROW HELPERS
+
+def _parse_sb_att(value):
+    """
+    Parse catcher 'SB-ATT' strings like '5-5' (SB-ATT) into (sb_allowed, attempts).
+    Returns (sb_allowed, attempts) as floats. Handles None/NaN/empty gracefully.
+    Accepts dashes '-', '–', '—', with/without spaces.
+    """
+    try:
+        if pd.isna(value):
+            return 0.0, 0.0
+        s = str(value).strip()
+        if not s:
+            return 0.0, 0.0
+        s = s.replace("—", "-").replace("–", "-")
+        if "-" in s:
+            parts = [p.strip() for p in s.split("-", 1)]
+            if len(parts) == 2:
+                sb = float(pd.to_numeric(parts[0], errors="coerce"))
+                att = float(pd.to_numeric(parts[1], errors="coerce"))
+                sb = 0.0 if pd.isna(sb) else sb
+                att = 0.0 if pd.isna(att) else att
+                return sb, att
+        # If it's a single number, treat as attempts, 0 SB allowed
+        att = float(pd.to_numeric(s, errors="coerce"))
+        att = 0.0 if pd.isna(att) else att
+        return 0.0, att
+    except Exception:
+        return 0.0, 0.0
+
 # =====================================================
 def _dec_to_baseball_tenths(ip_dec: float) -> float:
     """
