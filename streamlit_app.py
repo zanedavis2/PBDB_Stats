@@ -86,7 +86,6 @@ def prepare_pitching_stats(df):
     df = df.copy()
     df = df.iloc[:, [1, 2] + list(range(53, 148))]
     df.columns = [c.replace(".1", "") for c in df.columns]
-    
     columns_to_keep = [
         "Last",
         "First",
