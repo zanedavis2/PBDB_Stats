@@ -741,7 +741,9 @@ def _append_totals(df, tab_name):
 
     # Helper to safe sum
     def ssum(col):
-        return pd.to_numeric(base.get(col, 0), errors="coerce").fillna(0).sum()
+        if col in base.columns:
+            return pd.to_numeric(base[col], errors="coerce").fillna(0).sum()
+        return 0.0
 
     total_row = {c: "" for c in base.columns}
     total_row["Last"] = "Totals"
