@@ -84,6 +84,9 @@ def prepare_batting_stats(df):
 
 def prepare_pitching_stats(df):
     df = df.copy()
+    df = df.iloc[:, [1, 2] + list(range(53, 148))]
+    df.columns = [c.replace(".1", "") for c in df.columns]
+    
     columns_to_keep = [
         "Last",
         "First",
@@ -787,99 +790,101 @@ CATCHING_KEY = pd.DataFrame({
 # Data loading helpers for the new UI
 
 def load_cumulative():
-    frames = {}
-    # Try to read pre-computed cumulative CSVs if they exist; otherwise fall back to aggregating all series on disk
-    hit_path = "cumulative_hitting.csv"
-    pit_path = "cumulative_pitching.csv"
-    fld_path = "cumulative_fielding.csv"
-    cat_path = "cumulative_catching.csv"
+    """Load season-to-date from a single cumulative.csv and split into
+    Hitting / Pitching / Fielding / Catching using the file's second header row.
+    Falls back to aggregating series on disk if cumulative.csv is missing.
+    """
+    frames = {t: pd.DataFrame() for t in STAT_TYPES_ALL}
+    cum_path = "cumulative.csv"
 
-    if all(os.path.exists(p) for p in [hit_path, pit_path, fld_path, cat_path]):
+    if os.path.exists(cum_path):
         try:
-            frames["Hitting"] = prepare_batting_stats(clean_df(pd.read_csv(hit_path)))
-        except Exception:
-            frames["Hitting"] = pd.DataFrame()
-        try:
-            frames["Pitching"] = prepare_pitching_stats(clean_df(pd.read_csv(pit_path)))
-        except Exception:
-            frames["Pitching"] = pd.DataFrame()
-        try:
-            frames["Fielding"] = prepare_fielding_stats(clean_df(pd.read_csv(fld_path)))
-        except Exception:
-            frames["Fielding"] = pd.DataFrame()
-        try:
-            frames["Catching"] = prepare_catching_stats(clean_df(pd.read_csv(cat_path)))
-        except Exception:
-            frames["Catching"] = pd.DataFrame()
+            df = pd.read_csv(cum_path, header=1)
+            # Normalize column names (strip whitespace) and drop all-NaN cols
+            df.columns = [str(c).strip() for c in df.columns]
+            df = df.dropna(axis=1, how="all")
+
+            # Clean names early
+            if {"Last", "First"}.issubset(df.columns):
+                df["Last"] = df["Last"].astype(str).str.strip().str.title()
+                df["First"] = df["First"].astype(str).str.strip().str.title()
+
+            # Identify section boundaries
+            # Hitting columns are from after [Number, Last, First] up to before first 'IP'
+            if "IP" in df.columns:
+                ip_idx = df.columns.get_loc("IP")
+            else:
+                ip_idx = len(df.columns)
+
+            # Fielding start at 'TC' (if present)
+            fld_start = df.columns.get_loc("TC") if "TC" in df.columns else None
+            cat_start = df.columns.get_loc("INN") if "INN" in df.columns else None
+
+            # ---- Hitting slice ----
+            hit_cols = list(df.columns[:ip_idx])
+            # Keep only expected hitting fields
+            hit_keep = [c for c in hit_cols if c in set([
+                "Last","First","PA","AB","H","AVG","OBP","SLG","OPS","RBI","R","BB","SO","XBH","2B","3B","HR","TB","SB",
+                "PS/PA","BB/K","C%","QAB","QAB%","HHB","HHB%","LD%","FB%","GB%","BABIP","BA/RISP","2OUTRBI","SF","HBP","H_RISP","AB_RISP","PS","1B","GIDP","GITP","CI"
+            ])]
+            hit_df = df[[c for c in hit_keep if c in df.columns]].copy()
+            # Derive missing fields if present
+            if "R" not in hit_df.columns and "RBI" in df.columns:
+                pass  # leave as-is
+            frames["Hitting"] = prepare_batting_stats(clean_df(hit_df)) if not hit_df.empty else pd.DataFrame()
+
+            # ---- Pitching slice ----
+            if fld_start is not None:
+                pit_cols = list(df.columns[ip_idx:fld_start])
+            elif cat_start is not None:
+                pit_cols = list(df.columns[ip_idx:cat_start])
+            else:
+                pit_cols = list(df.columns[ip_idx:])
+
+            # Prefer pitching-specific stats; remove suffixes like .1
+            def _unsuffix(name: str):
+                return name.split(".")[0]
+            pit_df = df[[c for c in pit_cols]].copy()
+            pit_df = pit_df.rename(columns={c: _unsuffix(c) for c in pit_df.columns})
+            # Ensure name columns included
+            for nc in ("Last","First"):
+                if nc in df.columns and nc not in pit_df.columns:
+                    pit_df[nc] = df[nc]
+            # Keep only downstream-needed columns
+            pit_keep = list({
+                "Last","First","IP","ER","H","BB","R","SO","K-L","HR","#P","BF","HBP",
+                "FPS%","FPSO%","FPSW%","FPSH%","S%","SM%","LD%","FB%","GB%","BABIP","BA/RISP",
+                "CS","SB","SB%","<3%","HHB%","WEAK%","BBS","ERA","WHIP","BB/INN","FIP","BAA"
+            } & set(pit_df.columns))
+            pit_df = pit_df[pit_keep + ([] if not {"Last","First"}.issubset(pit_df.columns) else [])]
+            if not pit_df.empty:
+                pit_df = generate_aggregated_pitching_df(pit_df)
+                frames["Pitching"] = prepare_pitching_stats(pit_df)
+
+            # ---- Fielding slice ----
+            if fld_start is not None:
+                fld_cols = [c for c in ["Last","First","TC","A","PO","FPCT","E","DP","TP"] if c in df.columns]
+                fld_df = df[fld_cols].copy()
+                frames["Fielding"] = prepare_fielding_stats(fld_df)
+
+            # ---- Catching slice ----
+            if cat_start is not None:
+                cat_cols = [c for c in ["Last","First","INN","PB","SB-ATT","CS","CS%","SB","PIK","CI"] if c in df.columns]
+                # Some exports have suffixes like SB.2, CS.2, PIK.2, CI.1
+                alt_map = {c: c.split(".")[0] for c in df.columns if any(c.startswith(x+".") for x in ["SB","CS","PIK","CI"])}
+                cat_df = df[[c for c in set(cat_cols) | set(alt_map.keys()) if c in df.columns]].copy()
+                if alt_map:
+                    cat_df = cat_df.rename(columns=alt_map)
+                frames["Catching"] = prepare_catching_stats(clean_df(cat_df))
+        except Exception as e:
+            # Fallback to series aggregation if anything goes wrong
+            series = list_series_csvs()
+            frames = load_series(STAT_TYPES_ALL, series) if series else {t: pd.DataFrame() for t in STAT_TYPES_ALL}
     else:
         # Aggregate all series in current folder as season-to-date
         series = list_series_csvs()
         frames = load_series(STAT_TYPES_ALL, series) if series else {t: pd.DataFrame() for t in STAT_TYPES_ALL}
     return frames
-
-
-def filter_qualified_frames(frames: dict, mins: dict):
-    out = {}
-    for tab_name, df in frames.items():
-        if df is None or df.empty:
-            out[tab_name] = df
-            continue
-        dfx = df.copy()
-        if tab_name == "Hitting" and "PA" in dfx.columns:
-            dfx = dfx[dfx["PA"] >= mins.get("Hitting", 0)]
-        elif tab_name == "Pitching" and "IP" in dfx.columns:
-            dfx = dfx[dfx["IP"] >= mins.get("Pitching", 0)]
-        elif tab_name == "Fielding" and "TC" in dfx.columns:
-            dfx = dfx[dfx["TC"] >= mins.get("Fielding", 0)]
-        elif tab_name == "Catching" and "INN" in dfx.columns:
-            dfx = dfx[dfx["INN"] >= mins.get("Catching", 0)]
-        out[tab_name] = dfx
-    return out
-
-
-def load_series(stat_types: list, selected_series: list):
-    frames = {t: pd.DataFrame() for t in STAT_TYPES_ALL}
-    if not selected_series:
-        return frames
-    # Hitting
-    if "Hitting" in stat_types:
-        try:
-            _hit = aggregate_stats_hitting(selected_series)
-            frames["Hitting"] = prepare_batting_stats(_hit)
-        except Exception:
-            frames["Hitting"] = pd.DataFrame()
-    # Pitching
-    if "Pitching" in stat_types:
-        try:
-            _pit = aggregate_stats_pitching(selected_series)
-            frames["Pitching"] = prepare_pitching_stats(generate_aggregated_pitching_df(_pit))
-        except Exception:
-            frames["Pitching"] = pd.DataFrame()
-    # Fielding
-    if "Fielding" in stat_types:
-        try:
-            _fld = aggregate_stats_fielding(selected_series)
-            frames["Fielding"] = prepare_fielding_stats(_fld)
-        except Exception:
-            frames["Fielding"] = pd.DataFrame()
-    # Catching
-    if "Catching" in stat_types:
-        try:
-            _cat = aggregate_stats_catching(selected_series)
-            frames["Catching"] = prepare_catching_stats(clean_df(_cat))
-        except Exception:
-            frames["Catching"] = pd.DataFrame()
-    return frames
-
-
-# =====================
-# Streamlit UI (Requested Layout)
-# =====================
-
-# =====================================================
-# UI LAYOUT (same format/end product)
-# =====================================================
-st.set_page_config(page_title="EUCB Stats (Fall 2025)", layout="wide")
 
 st.title("EUCB Stats (Fall 2025)")
 
