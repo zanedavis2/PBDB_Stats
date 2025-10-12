@@ -20,13 +20,20 @@ only light edits for small bugs and to fit Streamlit I/O.
 
 def clean_df(df):
     if "Last" in df.columns and "First" in df.columns:
-        # Normalize blanks to NaN
+        # Normalize to strings
         df["Last"] = df["Last"].astype(str).str.strip()
         df["First"] = df["First"].astype(str).str.strip()
-        df["Last"].replace(["", "nan", "NaN", "None"], np.nan, inplace=True)
-        df["First"].replace(["", "nan", "NaN", "None"], np.nan, inplace=True)
 
-        # Drop totals/empty tail if present
+        # Treat any casing of 'nan'/'none' or blanks as missing
+        def _norm_missing(s):
+            s = s.astype(str).str.strip()
+            lower = s.str.lower()
+            s = s.mask(lower.isin(["", "nan", "none"]))
+            return s
+        df["Last"] = _norm_missing(df["Last"])
+        df["First"] = _norm_missing(df["First"])
+
+        # Drop totals/empty tail if present (both names missing)
         totals_idx = df.index[df["Last"].isna() & df["First"].isna()]
         if len(totals_idx) > 0:
             first_total = totals_idx[0]
@@ -749,10 +756,14 @@ def list_series_csvs():
 def _drop_rows_nan_names(df):
     if df is None or df.empty:
         return df
+    # Coerce 'Nan', 'nan', 'NaN', 'None', '' to real NaN before dropping rows with both names missing
+    for c in [col for col in ["Last", "First"] if col in df.columns]:
+        s = df[c].astype(str).str.strip()
+        df[c] = s.mask(s.str.lower().isin(["", "nan", "none"]))
     cols = [c for c in ["Last", "First"] if c in df.columns]
     if not cols:
         return df
-    return df.dropna(subset=cols, how="all").reset_index(drop=True)
+    return df.dropna(subset=cols, how="all").reset_index(drop=True).reset_index(drop=True)
 
 # Utility: append a totals row (sum numeric columns)
 def _append_totals(df, tab_name):
@@ -811,17 +822,30 @@ def _apply_display_formatting(df, tab_name):
 # Data loading: cumulative -> read one file and let the prep funcs select columns
 
 def load_cumulative():
-    try:
-        df_all = pd.read_csv(CUMULATIVE_FILE)
-    except Exception:
-        # If missing, return empties
+    # Try exact file, then fallback to any *cumulative*.csv (case-insensitive)
+    df_all = None
+    candidates = [CUMULATIVE_FILE]
+    # Add common alt casings
+    candidates += list({
+        p for p in glob.glob("*.csv") if "cumulative" in os.path.basename(p).lower()
+    })
+    for path in candidates:
+        try:
+            df_all = pd.read_csv(path)
+            break
+        except Exception:
+            continue
+
+    if df_all is None or df_all.empty:
         return {s: pd.DataFrame() for s in STAT_TYPES_ALL}
 
+    df_all = clean_df(df_all)
+
     frames = {
-        "Hitting": prepare_batting_stats(clean_df(df_all)),
-        "Pitching": prepare_pitching_stats(clean_df(df_all)),
-        "Fielding": prepare_fielding_stats(clean_df(df_all)),
-        "Catching": prepare_catching_stats(clean_df(df_all)),
+        "Hitting": prepare_batting_stats(df_all),
+        "Pitching": prepare_pitching_stats(df_all),
+        "Fielding": prepare_fielding_stats(df_all),
+        "Catching": prepare_catching_stats(df_all),
     }
     return frames
 
