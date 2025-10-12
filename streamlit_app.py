@@ -711,175 +711,273 @@ PITCHING_KEY = pd.DataFrame({
 
 
 # =====================
-# Streamlit UI
+# Constants & lightweight helpers for new UI
 # =====================
+STAT_TYPES_ALL = ["Hitting", "Pitching", "Fielding", "Catching"]
+QUAL_MINS = {"Hitting": 1, "Pitching": 0.1, "Fielding": 1, "Catching": 0.1}
 
-st.set_page_config(page_title="PBDB Stats Viewer", layout="wide")
-st.title("PBDB Filterable Stat Display")
-st.caption("Series aggregation and cumulative uploads in one place.")
+FIELDING_KEY = pd.DataFrame({
+    "Acronym": ["TC", "A", "PO", "FPCT", "E", "DP"],
+    "Meaning": [
+        "Total Chances", "Assists", "Putouts", "Fielding Percentage",
+        "Errors", "Double Plays involvement"
+    ]
+})
 
-# ---- Data source selection ----
-mode = st.sidebar.radio("Data source", ["Select series (CSV on disk)", "Upload cumulative CSVs"], index=0)
+CATCHING_KEY = pd.DataFrame({
+    "Acronym": ["INN", "PB", "SB-ATT", "CS", "CS%"],
+    "Meaning": [
+        "Innings Caught", "Passed Balls", "Stolen Base Attempts",
+        "Caught Stealing", "Caught Stealing %"
+    ]
+})
 
-def parse_series(text):
-    return [s.strip() for s in text.split(",") if s.strip()]
+# Files expected locally (keep it simple per user's note)
+CUMULATIVE_FILE = "cumulative.csv"
 
-# Containers for dataframes
-hitting_df = None
-pitching_df = None
-fielding_df = None
-catching_df = None
+# Utility: list available series CSV base names (exclude cumulative)
+def list_series_csvs():
+    names = []
+    for p in glob.glob("*.csv"):
+        base = os.path.splitext(os.path.basename(p))[0]
+        if base.lower() != os.path.splitext(CUMULATIVE_FILE)[0].lower():
+            names.append(base)
+    # Stable order preference: alphabetical
+    return sorted(names)
 
-if mode == "Select series (CSV on disk)":
-    st.sidebar.write("**Enter series names that match `<name>.csv>` in this folder**")
-    default_series = "wake,jmu"
-    series_text = st.sidebar.text_input("Series (comma-separated)", value=default_series)
-    series_selection = parse_series(series_text)
-
-    if series_selection:
-        with st.spinner("Aggregating stats from selected series ..."):
-            # Hitting
-            try:
-                _hit = aggregate_stats_hitting(series_selection)
-                hitting_df = generate_aggregated_hitting_df(_hit)
-                hitting_df = prepare_batting_stats(hitting_df)
-            except Exception as e:
-                st.warning(f"Hitting aggregation failed: {e}")
-
-            # Pitching
-            try:
-                _pit = aggregate_stats_pitching(series_selection)
-                pitching_df = generate_aggregated_pitching_df(_pit)
-                pitching_df = prepare_pitching_stats(pitching_df)
-            except Exception as e:
-                st.warning(f"Pitching aggregation failed: {e}")
-
-            # Fielding
-            try:
-                _fld = aggregate_stats_fielding(series_selection)
-                fielding_df = prepare_fielding_stats(_fld)
-            except Exception as e:
-                st.warning(f"Fielding aggregation failed: {e}")
-
-            # Catching
-            try:
-                _cat = aggregate_stats_catching(series_selection)
-                catching_df = prepare_catching_stats(clean_df(_cat))
-            except Exception as e:
-                st.warning(f"Catching aggregation failed: {e}")
-else:
-    st.sidebar.write("Upload your four cumulative CSVs (already combined across series)")
-    up_hit = st.sidebar.file_uploader("Cumulative Hitting CSV", type=["csv"], key="hit")
-    up_pit = st.sidebar.file_uploader("Cumulative Pitching CSV", type=["csv"], key="pit")
-    up_fld = st.sidebar.file_uploader("Cumulative Fielding CSV", type=["csv"], key="fld")
-    up_cat = st.sidebar.file_uploader("Cumulative Catching CSV", type=["csv"], key="cat")
-
-    if up_hit:
-        df = pd.read_csv(up_hit)
-        hitting_df = prepare_batting_stats(clean_df(df))
-    if up_pit:
-        df = pd.read_csv(up_pit)
-        pitching_df = prepare_pitching_stats(clean_df(df))
-    if up_fld:
-        df = pd.read_csv(up_fld)
-        fielding_df = prepare_fielding_stats(clean_df(df))
-    if up_cat:
-        df = pd.read_csv(up_cat)
-        catching_df = prepare_catching_stats(clean_df(df))
-
-# ---- Filters ----
-with st.sidebar.expander("Filters", expanded=True):
-    min_pa = st.number_input("Min PA (Hitting)", min_value=0, value=0, step=1)
-    min_ip = st.number_input("Min IP (Pitching)", min_value=0.0, value=0.0, step=0.1)
-    min_tc = st.number_input("Min TC (Fielding)", min_value=0, value=0, step=1)
-    min_inn = st.number_input("Min INN (Catching)", min_value=0.0, value=0.0, step=0.1)
-    name_filter = st.text_input("Filter by last name contains (all tables)", value="")
-
-    format_rates = st.checkbox("Format rates as .xxx where applicable", value=False)
-
-# ---- Display tabs ----
-T1, T2, T3, T4 = st.tabs(["Hitting", "Pitching", "Fielding", "Catching"])
-
-# Utility: apply common filters
-
-def _apply_common_filters(df, name_filter_substr):
+# Utility: drop rows with missing names
+def _drop_rows_nan_names(df):
     if df is None or df.empty:
         return df
-    out = df.copy()
-    if name_filter_substr:
-        out = out[out["Last"].astype(str).str.contains(name_filter_substr, case=False, na=False)]
-    return out
+    cols = [c for c in ["Last", "First"] if c in df.columns]
+    if not cols:
+        return df
+    return df.dropna(subset=cols, how="all").reset_index(drop=True)
 
-# Utility: format .xxx for rate-like columns
+# Utility: append a totals row (sum numeric columns)
+def _append_totals(df, tab_name):
+    if df is None or df.empty:
+        return df
+    num = df.select_dtypes(include=[np.number])
+    if num.empty:
+        return df
+    totals = num.sum(numeric_only=True)
+    total_row = {c: "" for c in df.columns}
+    total_row.update(totals.to_dict())
+    total_row["Last"] = "Totals"
+    total_row["First"] = ""
+    return pd.concat([df, pd.DataFrame([total_row])], ignore_index=True)
+
+# Utility: filter selected players (by Last)
+def filter_players(df, selected_lastnames):
+    if not selected_lastnames:
+        return df
+    if "Last" not in df.columns:
+        return df
+    return df[df["Last"].isin(selected_lastnames)].copy()
+
+# Pitching IP > 0 filter
+def _pitching_ip_gt_zero(df):
+    if "IP" not in df.columns:
+        return df
+    return df[df["IP"].fillna(0) > 0].copy()
+
+# Extract all player last names from frames (dict of dfs)
+def extract_all_players(frames):
+    names = set()
+    for df in frames.values():
+        if df is not None and not df.empty and "Last" in df.columns:
+            names.update(df["Last"].dropna().astype(str))
+    return sorted(names)
+
+# Display formatting (rates -> .xxx where relevant + Streamlit column_config)
 RATE_COLS = {
     "Hitting": ["AVG", "OBP", "SLG", "OPS", "QAB%", "BB/K", "C%", "HHB%", "LD%", "FB%", "GB%", "BABIP", "BA/RISP", "PS/PA"],
     "Pitching": ["ERA", "WHIP", "BB/INN", "S%", "FPS%", "FPSO%", "FPSH%", "SM%", "LD%", "FB%", "GB%", "HHB%", "WEAK%", "BAA", "BABIP", "BA/RISP", "SB%", "<3%"],
 }
 
-def _fmt_rates(df, which):
-    if not format_rates or df is None or df.empty:
-        return df
-    cols = [c for c in RATE_COLS.get(which, []) if c in df.columns]
+def _apply_display_formatting(df, tab_name):
+    if df is None or df.empty:
+        return df, {}
     out = df.copy()
-    for c in cols:
+    # Format rate-like columns as .xxx where applicable
+    for c in RATE_COLS.get(tab_name, []):
+        if c in out.columns and pd.api.types.is_numeric_dtype(out[c]):
+            out[c] = out[c].apply(lambda x: f"{x:.3f}").str.replace("0.", ".", regex=False)
+    # Minimal column_config passthrough
+    column_config = {}
+    return out, column_config
+
+# Data loading: cumulative -> read one file and let the prep funcs select columns
+
+def load_cumulative():
+    try:
+        df_all = pd.read_csv(CUMULATIVE_FILE)
+    except Exception:
+        # If missing, return empties
+        return {s: pd.DataFrame() for s in STAT_TYPES_ALL}
+
+    frames = {
+        "Hitting": prepare_batting_stats(clean_df(df_all)),
+        "Pitching": prepare_pitching_stats(clean_df(df_all)),
+        "Fielding": prepare_fielding_stats(clean_df(df_all)),
+        "Catching": prepare_catching_stats(clean_df(df_all)),
+    }
+    return frames
+
+# Data loading: series -> aggregate using existing funcs
+
+def load_series(stat_types, selected_series):
+    frames = {}
+    sel = selected_series or []
+    if "Hitting" in stat_types:
         try:
-            out[c] = out[c].apply(lambda x: (f"{x:.3f}" if pd.notna(x) else "")).str.replace("0.", ".", regex=False)
+            _hit = aggregate_stats_hitting(sel)
+            frames["Hitting"] = prepare_batting_stats(generate_aggregated_hitting_df(_hit))
         except Exception:
-            pass
+            frames["Hitting"] = pd.DataFrame()
+    if "Pitching" in stat_types:
+        try:
+            _pit = aggregate_stats_pitching(sel)
+            frames["Pitching"] = prepare_pitching_stats(generate_aggregated_pitching_df(_pit))
+        except Exception:
+            frames["Pitching"] = pd.DataFrame()
+    if "Fielding" in stat_types:
+        try:
+            _fld = aggregate_stats_fielding(sel)
+            frames["Fielding"] = prepare_fielding_stats(_fld)
+        except Exception:
+            frames["Fielding"] = pd.DataFrame()
+    if "Catching" in stat_types:
+        try:
+            _cat = aggregate_stats_catching(sel)
+            frames["Catching"] = prepare_catching_stats(clean_df(_cat))
+        except Exception:
+            frames["Catching"] = pd.DataFrame()
+    return frames
+
+# Apply qualification mins (drop rows below thresholds)
+
+def filter_qualified_frames(frames, qual_mins):
+    out = {}
+    for key, df in frames.items():
+        if df is None or df.empty:
+            out[key] = df
+            continue
+        dfx = df.copy()
+        if key == "Hitting" and "PA" in dfx.columns:
+            dfx = dfx[dfx["PA"] >= qual_mins.get("Hitting", 0)]
+        elif key == "Pitching" and "IP" in dfx.columns:
+            dfx = dfx[dfx["IP"] >= qual_mins.get("Pitching", 0)]
+        elif key == "Fielding" and "TC" in dfx.columns:
+            dfx = dfx[dfx["TC"] >= qual_mins.get("Fielding", 0)]
+        elif key == "Catching" and "INN" in dfx.columns:
+            dfx = dfx[dfx["INN"] >= qual_mins.get("Catching", 0)]
+        out[key] = dfx
     return out
 
-# ---- Hitting ----
-with T1:
-    if hitting_df is None:
-        st.info("No hitting data yet.")
-    else:
-        hd = hitting_df.copy()
-        if "PA" in hd.columns:
-            hd = hd[hd["PA"] >= min_pa]
-        hd = _apply_common_filters(hd, name_filter)
-        hd = _fmt_rates(hd, "Hitting")
-        st.dataframe(hd, use_container_width=True)
-        st.download_button("Download Hitting CSV", data=hd.to_csv(index=False).encode("utf-8"), file_name="hitting.csv")
-        with st.expander("Acronym key"):
-            st.dataframe(HITTING_KEY, use_container_width=True)
+# =====================
+# NEW UI LAYOUT (same format/end product)
+# =====================
+st.set_page_config(page_title="EUCB Stats (Fall 2025)", layout="wide")
 
-# ---- Pitching ----
-with T2:
-    if pitching_df is None:
-        st.info("No pitching data yet.")
-    else:
-        pdx = pitching_df.copy()
-        if "IP" in pdx.columns:
-            pdx = pdx[pdx["IP"] >= min_ip]
-        pdx = _apply_common_filters(pdx, name_filter)
-        pdx = _fmt_rates(pdx, "Pitching")
-        st.dataframe(pdx, use_container_width=True)
-        st.download_button("Download Pitching CSV", data=pdx.to_csv(index=False).encode("utf-8"), file_name="pitching.csv")
-        with st.expander("Acronym key"):
-            st.dataframe(PITCHING_KEY, use_container_width=True)
+st.title("EUCB Stats (Fall 2025)")
 
-# ---- Fielding ----
-with T3:
-    if fielding_df is None:
-        st.info("No fielding data yet.")
-    else:
-        fd = fielding_df.copy()
-        if "TC" in fd.columns:
-            fd = fd[fd["TC"] >= min_tc]
-        fd = _apply_common_filters(fd, name_filter)
-        st.dataframe(fd, use_container_width=True)
-        st.download_button("Download Fielding CSV", data=fd.to_csv(index=False).encode("utf-8"), file_name="fielding.csv")
+with st.sidebar:
+    st.header("Filters")
+    data_source = st.radio(
+        "Data source",
+        ["Cumulative (default)", "Filter by Series"],
+        index=0,
+        help="Cumulative shows season-to-date. 'Filter by Series' lets you pick one or more series CSVs."
+    )
 
-# ---- Catching ----
-with T4:
-    if catching_df is None:
-        st.info("No catching data yet.")
-    else:
-        cd = catching_df.copy()
-        if "INN" in cd.columns:
-            cd = cd[cd["INN"] >= min_inn]
-        cd = _apply_common_filters(cd, name_filter)
-        st.dataframe(cd, use_container_width=True)
-        st.download_button("Download Catching CSV", data=cd.to_csv(index=False).encode("utf-8"), file_name="catching.csv")
+    stat_types = st.multiselect(
+        "Stat type(s)",
+        STAT_TYPES_ALL,
+        default=STAT_TYPES_ALL,
+        help="Choose which player groups to display."
+    )
 
-st.caption("Tip: In 'Select series' mode, ensure your CSV files are named exactly as '<series>.csv' in the working directory.")
+    series_options = list_series_csvs()
+    selected_series = []
+    if data_source == "Filter by Series":
+        selected_series = st.multiselect(
+            "Series (choose one or many)",
+            options=series_options,
+            default=series_options[:1] if series_options else [],
+            help="Series correspond to CSV base names (e.g., wake, jmu, unc)."
+        )
+
+# Load per selection
+if data_source == "Cumulative (default)":
+    frames = load_cumulative()
+    frames = filter_qualified_frames(frames, QUAL_MINS)
+else:
+    if not selected_series:
+        st.warning("Select at least one series to view stats.")
+        st.stop()
+    frames = load_series(stat_types if stat_types else STAT_TYPES_ALL, selected_series)
+
+all_player_lastnames = extract_all_players(frames)
+selected_players = st.multiselect(
+    "Filter by player (Last name); leave empty for All",
+    options=all_player_lastnames,
+    default=[],
+)
+
+# Tabs
+tabs_to_show = stat_types if stat_types else STAT_TYPES_ALL
+tabs = st.tabs(tabs_to_show)
+
+for tab_name, tab in zip(tabs_to_show, tabs):
+    with tab:
+        df = frames.get(tab_name, pd.DataFrame())
+        if df.empty:
+            st.info(f"No data for **{tab_name}** with current filters.")
+            continue
+
+        df_filtered = filter_players(df, selected_players)
+        df_filtered = _drop_rows_nan_names(df_filtered)
+        # Append totals row prior to formatting
+        df_filtered = _append_totals(df_filtered, tab_name)
+        if selected_players and tab_name == "Pitching":
+            df_before = len(df_filtered)
+            df_filtered = _pitching_ip_gt_zero(df_filtered)
+            if df_filtered.empty:
+                st.warning(
+                    "No **Pitching** rows match selected player(s) with > 0 IP."
+                    if df_before > 0 else
+                    "No **Pitching** rows match selected player(s)."
+                )
+                continue
+
+        if df_filtered.empty:
+            if selected_players:
+                st.warning(f"No **{tab_name}** rows match selected player(s).")
+            else:
+                st.info(f"No data for **{tab_name}** with current filters.")
+            continue
+
+        df_display, column_config = _apply_display_formatting(df_filtered, tab_name)
+
+        st.subheader(f"{tab_name} Stats")
+        st.dataframe(
+            df_display,
+            use_container_width=True,
+            hide_index=True,
+            column_config=column_config
+        )
+
+        if tab_name == "Hitting":
+            with st.expander("Hitting Acronym Key", expanded=False):
+                st.dataframe(HITTING_KEY, use_container_width=True, hide_index=True)
+        elif tab_name == "Pitching":
+            with st.expander("Pitching Acronym Key", expanded=False):
+                st.dataframe(PITCHING_KEY, use_container_width=True, hide_index=True)
+        elif tab_name == "Fielding":
+            with st.expander("Fielding Acronym Key", expanded=False):
+                st.dataframe(FIELDING_KEY, use_container_width=True, hide_index=True)
+        elif tab_name == "Catching":
+            with st.expander("Catching Acronym Key", expanded=False):
+                st.dataframe(CATCHING_KEY, use_container_width=True, hide_index=True)
