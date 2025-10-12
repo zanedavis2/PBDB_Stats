@@ -5,6 +5,17 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 
+# --- Guards for constants used by the UI (avoid NameError if moved around) ---
+try:
+    STAT_TYPES_ALL
+except NameError:
+    STAT_TYPES_ALL = ["Hitting", "Pitching", "Fielding", "Catching"]
+
+try:
+    QUAL_MINS
+except NameError:
+    QUAL_MINS = {"Hitting": 0, "Pitching": 0.0, "Fielding": 0, "Catching": 0.0}
+
 """
 This Streamlit app wraps the original PBDB stats functions in a single-file interface
 that lets you select series (e.g., ["wake", "jmu"]) or upload cumulative CSVs, and
@@ -84,8 +95,6 @@ def prepare_batting_stats(df):
 
 def prepare_pitching_stats(df):
     df = df.copy()
-    df = df.iloc[:, [1, 2] + list(range(53, 148))]
-    df.columns = [c.replace(".1", "") for c in df.columns]
     columns_to_keep = [
         "Last",
         "First",
