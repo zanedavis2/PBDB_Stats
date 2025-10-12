@@ -288,69 +288,53 @@ def aggregate_stats_pitching(csv_files):
 
 
 def generate_aggregated_pitching_df(df):
+    """
+    Takes an aggregated integer pitching dataframe and computes derived metrics.
+    Returns a clean dataframe ready for display or export.
+    Safe to call on data read from series or cumulative CSVs (strings, dashes, etc.).
+    """
     columns_to_keep = [
-        "Last",
-        "First",
-        "IP",
-        "ERA",
-        "WHIP",
-        "SO",
-        "K-L",
-        "H",
-        "R",
-        "ER",
-        "BB",
-        "BB/INN",
-        "FIP",
-        "S%",
-        "FPS%",
-        "FPSO%",
-        "FPSH%",
-        "BAA",
-        "BBS",
-        "SM%",
-        "LD%",
-        "FB%",
-        "GB%",
-        "BABIP",
-        "BA/RISP",
-        "CS",
-        "SB",
-        "SB%",
-        "<3%",
-        "HHB%",
-        "WEAK%",
+        "Last", "First", "IP", "ERA", "WHIP", "K", "K-L", "H", "R", "ER", "BB", "BB/INN",
+        "FIP", "S%", "FPS%", "FPSO%", "FPSH%", "BAA", "BBS", "SM%", "LD%", "FB%", "GB%",
+        "BABIP", "BA/RISP", "CS", "SB", "SB%", "<3%", "HHB%", "WEAK%"
     ]
 
     df = df.copy()
 
-    for col in [
-        "IP",
-        "ER",
-        "H",
-        "BB",
-        "SO",
-        "K-L",
-        "HR",
-        "#P",
-        "BF",
-        "Strikes",
-        "FirstPitchStrikes",
-        "FPSO",
-        "FPSH",
-        "GroundBalls",
-        "FlyBalls",
-        "LineDrives",
-        "HardHitBalls",
-        "WeakContact",
-        "Under3Pitches",
-        "SwingMisses",
-        "BBS",
-        "CS",
-        "SB",
-    ]:
-        if col not in df.columns:
-            df[col] = 0
+    # ---- Safety: ensure numeric types ----
+    def _to_num(s):
+        return pd.to_numeric(pd.Series(s).astype(str).str.replace("-", "", regex=False), errors="coerce")
+
+    # Convert baseball-style innings (4.1 -> 4.3333, 4.2 -> 4.6667)
+    def _convert_innings_value(ip):
+        try:
+            if pd.isna(ip):
+                return np.nan
+            ip = float(str(ip))
+            whole = int(ip)
+            frac_tenths = round((ip - whole) * 10)
+            if frac_tenths == 1:
+                return whole + (1.0/3.0)
+            elif frac_tenths == 2:
+                return whole + (2.0/3.0)
+            else:
+                return ip
+        except Exception:
+            return np.nan
+
+    needed_numeric = [
+        "IP","ER","H","BB","SO","K-L","HR","#P","BF","Strikes","FirstPitchStrikes",
+        "FPSO","FPSH","GroundBalls","FlyBalls","LineDrives","HardHitBalls","WeakContact",
+        "Under3Pitches","SwingMisses","BBS","CS","SB","HBP"
+    ]
+    for c in needed_numeric:
+        if c in df.columns:
+            df[c] = _to_num(df[c])
+        else:
+            df[c] = 0
+
+    if "IP" in df.columns:
+        df["IP"] = df["IP"].apply(_convert_innings_value)
 
     # Avoid /0
     df["IP"] = df["IP"].replace(0, np.nan)
@@ -383,9 +367,6 @@ def generate_aggregated_pitching_df(df):
     # BAA, BABIP
     df["BAA"] = np.where((df["BF"] - df["BB"] - df["HBP"]) > 0, (df["H"] / (df["BF"] - df["BB"] - df["HBP"])) .round(3), 0)
     df["BABIP"] = np.where((df["BF"] - df["SO"] - df["HR"] - df["BB"] - df["HBP"]) > 0, ((df["H"] - df["HR"]) / (df["BF"] - df["SO"] - df["HR"] - df["BB"] - df["HBP"])) .round(3), 0)
-
-    if "BA/RISP" not in df.columns:
-        df["BA/RISP"] = 0.000
 
     for col in columns_to_keep:
         if col not in df.columns:
@@ -797,7 +778,42 @@ CATCHING_KEY = pd.DataFrame({
 
 # Data loading helpers for the new UI
 
-def load_cumulative():
+def load_series(stat_types: list, selected_series: list):
+    frames = {t: pd.DataFrame() for t in STAT_TYPES_ALL}
+    if not selected_series:
+        return frames
+    # Hitting
+    if "Hitting" in stat_types:
+        try:
+            _hit = aggregate_stats_hitting(selected_series)
+            frames["Hitting"] = prepare_batting_stats(_hit)
+        except Exception:
+            frames["Hitting"] = pd.DataFrame()
+    # Pitching
+    if "Pitching" in stat_types:
+        try:
+            _pit = aggregate_stats_pitching(selected_series)
+            frames["Pitching"] = prepare_pitching_stats(generate_aggregated_pitching_df(_pit))
+        except Exception:
+            frames["Pitching"] = pd.DataFrame()
+    # Fielding
+    if "Fielding" in stat_types:
+        try:
+            _fld = aggregate_stats_fielding(selected_series)
+            frames["Fielding"] = prepare_fielding_stats(_fld)
+        except Exception:
+            frames["Fielding"] = pd.DataFrame()
+    # Catching
+    if "Catching" in stat_types:
+        try:
+            _cat = aggregate_stats_catching(selected_series)
+            frames["Catching"] = prepare_catching_stats(clean_df(_cat))
+        except Exception:
+            frames["Catching"] = pd.DataFrame()
+    return frames
+
+
+def load_cumulative()():
     """Load season-to-date from a single cumulative.csv and split into
     Hitting / Pitching / Fielding / Catching using the file's second header row.
     Falls back to aggregating series on disk if cumulative.csv is missing.
