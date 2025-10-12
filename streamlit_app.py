@@ -875,7 +875,7 @@ def _append_totals(df, tab_name):
 
     # Compose totals row and return
     totals_df = pd.DataFrame([total_row])
-    return pd.concat([base, totals_df], ignore_index=True)], ignore_index=True)
+    return pd.concat([base, totals_df], ignore_index=True)
 
 # Utility: filter selected players (by Last)
 def filter_players(df, selected_lastnames):
