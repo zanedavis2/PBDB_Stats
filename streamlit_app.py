@@ -708,7 +708,7 @@ CATCHING_KEY = pd.DataFrame({
 })
 
 # Files expected locally (keep it simple per user's note)
-CUMULATIVE_FILE = "cumulative.csv"
+CUMULATIVE_FILE = "cumulative_v2.csv"
 
 # Utility: list available series CSV base names (exclude cumulative)
 def list_series_csvs():
