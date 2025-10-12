@@ -364,54 +364,52 @@ def generate_aggregated_pitching_df(df):
 # ============================
 
 def aggregate_stats_hitting(csv_files):
+    import numpy as np
+    import pandas as pd
+
     cols_to_keep = [
-        "Last",
-        "First",
-        "PA",
-        "AB",
-        "H",
-        "BB",
-        "HBP",
-        "SF",
-        "TB",
-        "R",
-        "RBI",
-        "SO",
-        "2B",
-        "3B",
-        "HR",
-        "SB",
-        "CS",
-        "QAB",
-        "HHB",
-        "LD",
-        "FB",
-        "GB",
-        "H_RISP",
-        "AB_RISP",
-        "PS",
-        "2OUTRBI",
-        "XBH",
+        "Last","First","PA","AB","H","BB","HBP","SF","TB","R","RBI","SO","2B","3B","HR",
+        "SB","CS","QAB","HHB","LD%","FB%","GB%","H_RISP","AB_RISP","PS","2OUTRBI","XBH",
     ]
+
+    def _pct_to_ratio(s):
+        s = pd.to_numeric(s, errors="coerce").fillna(0.0)
+        return np.where(s > 1.0, s / 100.0, s)
 
     dfs = []
     for name in csv_files:
         file = f"{name}.csv"
         df = pd.read_csv(file, header=1)
-        df = df[[c for c in cols_to_keep if c in df.columns]]
+        df = df[[c for c in cols_to_keep if c in df.columns]].copy()
 
+        # Clean names
         df["Last"] = df["Last"].astype(str).str.strip().str.title()
         df["First"] = df["First"].astype(str).str.strip().str.title()
 
+        # Convert all numeric columns
         for col in df.columns:
             if col not in ["Last", "First"]:
                 df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
+
+        # Convert % to ratio and compute LD/GB/FB counts = ratio * AB
+        ld_ratio = _pct_to_ratio(df.get("LD%", 0))
+        gb_ratio = _pct_to_ratio(df.get("GB%", 0))
+        fb_ratio = _pct_to_ratio(df.get("FB%", 0))
+
+        df["LD"] = np.rint(ld_ratio * df.get("AB", 0)).astype(int)
+        df["GB"] = np.rint(gb_ratio * df.get("AB", 0)).astype(int)
+        df["FB"] = np.rint(fb_ratio * df.get("AB", 0)).astype(int)
+
         dfs.append(df)
 
     combined = pd.concat(dfs, ignore_index=True)
-    agg_df = combined.groupby(["Last", "First"], as_index=False).sum()
-    return agg_df
+    agg_df = combined.groupby(["Last", "First"], as_index=False).sum(numeric_only=True)
 
+    for c in ["LD", "GB", "FB"]:
+        if c in agg_df.columns:
+            agg_df[c] = agg_df[c].astype(int)
+
+    return agg_df
 
 def generate_aggregated_hitting_df(df):
     cols_to_keep = [
