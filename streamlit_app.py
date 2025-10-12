@@ -813,7 +813,7 @@ def load_series(stat_types: list, selected_series: list):
     return frames
 
 
-def load_cumulative()():
+def load_cumulative():
     """Load season-to-date from a single cumulative.csv and split into
     Hitting / Pitching / Fielding / Catching using the file's second header row.
     Falls back to aggregating series on disk if cumulative.csv is missing.
