@@ -811,11 +811,31 @@ def _apply_display_formatting(df, tab_name):
     if df is None or df.empty:
         return df, {}
     out = df.copy()
-    # Format rate-like columns as .xxx where applicable
-    for c in RATE_COLS.get(tab_name, []):
-        if c in out.columns and pd.api.types.is_numeric_dtype(out[c]):
-            out[c] = out[c].apply(lambda x: f"{x:.3f}").str.replace("0.", ".", regex=False)
-    # Minimal column_config passthrough
+
+    # 1) Format true percent columns (any column ending with '%') as XX.XX%
+    pct_cols = [c for c in out.columns if isinstance(c, str) and c.strip().endswith('%') and pd.api.types.is_numeric_dtype(out[c])]
+    for c in pct_cols:
+        s = out[c].astype(float)
+        vals = s.replace([np.inf, -np.inf], np.nan).dropna().abs()
+        if len(vals) == 0:
+            scale = 1.0
+        else:
+            maxv = vals.max()
+            # Heuristics: 0–1 -> *100, 0–10 -> *10 (common accidental scale), else leave
+            if maxv <= 1.0:
+                scale = 100.0
+            elif maxv <= 10.0:
+                scale = 10.0
+            else:
+                scale = 1.0
+        out[c] = (s * scale).map(lambda x: f"{x:.2f}%" if pd.notna(x) else "")
+
+    # 2) Format non-percent rate-like columns (AVG/OBP/SLG/etc.) as .xxx
+    non_pct_rate_cols = [c for c in RATE_COLS.get(tab_name, []) if c in out.columns and not c.strip().endswith('%')]
+    for c in non_pct_rate_cols:
+        if pd.api.types.is_numeric_dtype(out[c]):
+            out[c] = out[c].apply(lambda x: (f"{x:.3f}" if pd.notna(x) else "")).str.replace("0.", ".", regex=False)
+
     column_config = {}
     return out, column_config
 
