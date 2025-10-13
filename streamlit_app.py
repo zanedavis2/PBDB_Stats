@@ -544,7 +544,7 @@ def _append_totals(df, tab_name):
             sb_sum  = pd.to_numeric(split[0], errors="coerce").fillna(0).sum()
             att_sum = pd.to_numeric(split[1], errors="coerce").fillna(0).sum()
             totals["SB-ATT"] = f"{int(sb_sum)}-{int(att_sum)}"
-            totals["CS%"] = round((1-(sb_sum / att_sum) * 100), 1) if att_sum else 0
+            totals["CS%"] = round(((att_sum - sb_sum) / att_sum) * 100), 1) if att_sum else 0
 
     for c in base.columns:
         if c in totals or c in ["Last","First"]: continue
