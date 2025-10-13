@@ -540,87 +540,148 @@ def _pitching_ip_gt_zero(df):
     if "IP" not in df.columns: return df
     return df[df["IP"].fillna(0) > 0].copy()
 
-def _apply_display_formatting(df, tab_name, source_mode):
+
+def _format_series(df, tab_name):
     """
-    Presentation-only formatter. Keeps all math intact.
-    - source_mode: "Cumulative" | "Series" (controls % scaling)
+    SERIES VIEW formatter (aggregated series → ratios for % need *100).
+    - Scale % columns by 100, render with 2 decimals + '%'
+    - Hitting rates as .xxx with 3 decimals
+    - Pitching ERA always 2 decimals; R and K-L as ints
+    - Other numerics: 3 fixed decimals (no stripping)
     """
     if df is None or df.empty:
         return df, {}
 
     out = df.copy()
 
-    # ===== Helper: format .xxx with exactly 3 decimals, leading dot =====
+    # Helpers
     def _dot3(x):
         if pd.isna(x):
             return ""
         s = f"{float(x):.3f}"
-        # turn "0.500" -> ".500"  ; "-0.250" -> "-.250"
         if s.startswith("0."):
-            s = "." + s[2:]
-        elif s.startswith("-0."):
-            s = "-." + s[3:]
+            return "." + s[2:]
+        if s.startswith("-0."):
+            return "-." + s[3:]
         return s
 
-    # ===== Percent columns =====
     pct_cols = [c for c in out.columns if isinstance(c, str) and c.endswith("%")]
 
-    # Scale series percents (they’re ratios in your aggregated tables) to percentages
-    # For cumulative, leave as-is because they’re already in percent units in your dataset.
-    if source_mode == "Series":
-        for c in pct_cols:
-            out[c] = pd.to_numeric(out[c], errors="coerce") * 100.0
-    else:
-        for c in pct_cols:
-            out[c] = pd.to_numeric(out[c], errors="coerce")
-
-    # Render percents with 2 decimals and a % sign
+    # SERIES: scale ratios → percent
     for c in pct_cols:
+        out[c] = pd.to_numeric(out[c], errors="coerce") * 100.0
         out[c] = out[c].map(lambda x: f"{x:.2f}%" if pd.notna(x) else "")
 
-    # ===== Hitting special decimal rates (exactly 3 decimals, leading dot) =====
+    # Hitting decimals as .xxx with 3 places
     if tab_name == "Hitting":
-        for c in [col for col in ["AVG", "OBP", "SLG", "OPS", "BABIP", "BA/RISP", "PS/PA"] if c in out.columns]:
+        for c in [k for k in ["AVG","OBP","SLG","OPS","BABIP","BA/RISP","PS/PA"] if k in out.columns]:
             out[c] = out[c].map(_dot3)
 
-    # ===== Pitching specific formatting =====
+    # Pitching specifics
     if tab_name == "Pitching":
-        # ERA: always 2 decimals
         if "ERA" in out.columns:
             out["ERA"] = out["ERA"].map(lambda x: f"{float(x):.2f}" if pd.notna(x) else "")
-
-        # R and K-L as integers (no decimals)
-        for c in [col for col in ["R", "K-L"] if col in out.columns]:
+        for c in [k for k in ["R","K-L"] if k in out.columns]:
             out[c] = pd.to_numeric(out[c], errors="coerce").fillna(0).astype("Int64").astype(str).replace("<NA>", "")
 
-    # ===== Generic numeric formatting (leave ints as ints; others 3 decimals fixed) =====
-    # Identify int-like columns per tab that should never show decimals
+    # Int-like columns per tab (display as ints)
     int_like_by_tab = {
         "Hitting":  ["PA","AB","H","R","RBI","BB","SO","2B","3B","HR","SB","QAB","XBH","TB","2OUTRBI","H_RISP","AB_RISP","HHB"],
-        "Pitching": ["H","R","ER","BB","SO","HR","BBS","CS","SB","K-L","BF","#P","HBP","GroundBalls","FlyBalls","LineDrives","HardHitBalls","WeakContact","Under3Pitches","SwingMisses"],
+        "Pitching": ["H","R","ER","BB","SO","HR","BBS","CS","SB","K-L","BF","#P","HBP",
+                     "GroundBalls","FlyBalls","LineDrives","HardHitBalls","WeakContact","Under3Pitches","SwingMisses"],
         "Fielding": ["TC","A","PO","E","DP"],
-        "Catching": ["INN","PB","CS"],  # SB-ATT stays as text "SB-ATT"
+        "Catching": ["INN","PB","CS"],  # SB-ATT stays text
     }
     int_like = set(int_like_by_tab.get(tab_name, []))
 
     for c in out.columns:
         if c in pct_cols:
-            continue  # already formatted
+            continue
         if c in int_like:
-            # Keep as integers
             out[c] = pd.to_numeric(out[c], errors="coerce").fillna(0).astype("Int64").astype(str).replace("<NA>", "")
         else:
-            # For everything else that is numeric and not already text, show up to 3 decimals (no stripping zeros)
             if pd.api.types.is_numeric_dtype(out[c]):
                 out[c] = out[c].map(lambda x: f"{float(x):.3f}" if pd.notna(x) else "")
 
-    # ===== Bold totals row =====
+    # Bold totals row
     if "Last" in out.columns:
         def _bold(row):
             return ["font-weight: bold" if str(row.get("Last","")).strip().lower() in {"totals","total"} else "" for _ in row]
         out = out.style.apply(_bold, axis=1)
 
     return out, {}
+
+
+
+def _format_cumulative(df, tab_name):
+    """
+    CUMULATIVE VIEW formatter (cumulative.csv → % already in percent units).
+    - Do NOT scale % columns; just render with 2 decimals + '%'
+    - Hitting rates as .xxx with 3 decimals
+    - Pitching ERA always 2 decimals; R and K-L as ints
+    - Other numerics: 3 fixed decimals (no stripping)
+    """
+    if df is None or df.empty:
+        return df, {}
+
+    out = df.copy()
+
+    def _dot3(x):
+        if pd.isna(x):
+            return ""
+        s = f"{float(x):.3f}"
+        if s.startswith("0."):
+            return "." + s[2:]
+        if s.startswith("-0."):
+            return "-." + s[3:]
+        return s
+
+    pct_cols = [c for c in out.columns if isinstance(c, str) and c.endswith("%")]
+
+    # CUMULATIVE: already percent → format only
+    for c in pct_cols:
+        out[c] = pd.to_numeric(out[c], errors="coerce")
+        out[c] = out[c].map(lambda x: f"{x:.2f}%" if pd.notna(x) else "")
+
+    if tab_name == "Hitting":
+        for c in [k for k in ["AVG","OBP","SLG","OPS","BABIP","BA/RISP","PS/PA"] if k in out.columns]:
+            out[c] = out[c].map(_dot3)
+
+    if tab_name == "Pitching":
+        if "ERA" in out.columns:
+            out["ERA"] = out["ERA"].map(lambda x: f"{float(x):.2f}" if pd.notna(x) else "")
+        for c in [k for k in ["R","K-L"] if k in out.columns]:
+            out[c] = pd.to_numeric(out[c], errors="coerce").fillna(0).astype("Int64").astype(str).replace("<NA>", "")
+
+    int_like_by_tab = {
+        "Hitting":  ["PA","AB","H","R","RBI","BB","SO","2B","3B","HR","SB","QAB","XBH","TB","2OUTRBI","H_RISP","AB_RISP","HHB"],
+        "Pitching": ["H","R","ER","BB","SO","HR","BBS","CS","SB","K-L","BF","#P","HBP",
+                     "GroundBalls","FlyBalls","LineDrives","HardHitBalls","WeakContact","Under3Pitches","SwingMisses"],
+        "Fielding": ["TC","A","PO","E","DP"],
+        "Catching": ["INN","PB","CS"],
+    }
+    int_like = set(int_like_by_tab.get(tab_name, []))
+
+    for c in out.columns:
+        if c in pct_cols:
+            continue
+        if c in int_like:
+            out[c] = pd.to_numeric(out[c], errors="coerce").fillna(0).astype("Int64").astype(str).replace("<NA>", "")
+        else:
+            if pd.api.types.is_numeric_dtype(out[c]):
+                out[c] = out[c].map(lambda x: f"{float(x):.3f}" if pd.notna(x) else "")
+
+    if "Last" in out.columns:
+        def _bold(row):
+            return ["font-weight: bold" if str(row.get("Last","")).strip().lower() in {"totals","total"} else "" for _ in row]
+        out = out.style.apply(_bold, axis=1)
+
+    return out, {}
+
+
+
+
+
 
 # =============================================================================
 # 2) DATA-SOURCE ADAPTERS
@@ -831,7 +892,11 @@ for tab_name, tab in zip(tabs_to_show, tabs):
                 st.info(f"No data for **{tab_name}** with current filters.")
             continue
 
-        df_display, column_config = _apply_display_formatting(df_filtered, tab_name, source_mode)
+        if source_mode == "Series":
+            df_display, column_config = _format_series(df_filtered, tab_name)
+        else:
+            df_display, column_config = _format_cumulative(df_filtered, tab_name)
+
 
 
         st.subheader(f"{tab_name} Stats")
