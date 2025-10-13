@@ -619,7 +619,15 @@ def _format_series(df, tab_name):
             out["BB/INN"] = out["BB/INN"].map(lambda x: f"{float(x):.2f}" if pd.notna(x) else "")
 
         for c in [k for k in ["R","K-L"] if k in out.columns]:
-            out[c] = pd.to_numeric(out[c], errors="coerce").fillna(0).astype("Int64").astype(str).replace("<NA>", "")
+            out[c] = (
+                pd.to_numeric(out[c], errors="coerce")
+                  .replace([np.inf, -np.inf], np.nan)  # kill inf/-inf from div-by-zero, etc.
+                  .round(0)                            # make any 2.5 → 3, etc., so Int64 is safe
+                  .fillna(0)
+                  .astype("Int64")
+                  .astype(str)
+                  .replace("<NA>", "")
+            )
         for c in pct_cols:
             out[c] = pd.to_numeric(out[c], errors="coerce") * 1.0
             out[c] = out[c].map(lambda x: f"{x:.2f}%" if pd.notna(x) else "")
@@ -639,7 +647,16 @@ def _format_series(df, tab_name):
         if c in pct_cols:
             continue
         if c in int_like:
-            out[c] = pd.to_numeric(out[c], errors="coerce").fillna(0).astype("Int64").astype(str).replace("<NA>", "")
+            #out[c] = pd.to_numeric(out[c], errors="coerce").fillna(0).astype("Int64").astype(str).replace("<NA>", "")
+            out[c] = (
+                pd.to_numeric(out[c], errors="coerce")
+                  .replace([np.inf, -np.inf], np.nan)  # kill inf/-inf from div-by-zero, etc.
+                  .round(0)                            # make any 2.5 → 3, etc., so Int64 is safe
+                  .fillna(0)
+                  .astype("Int64")
+                  .astype(str)
+                  .replace("<NA>", "")
+            )
         else:
             if pd.api.types.is_numeric_dtype(out[c]):
                 out[c] = out[c].map(lambda x: f"{float(x):.3f}" if pd.notna(x) else "")
@@ -698,8 +715,15 @@ def _format_cumulative(df, tab_name):
         if "BB/INN" in out.columns:
             out["BB/INN"] = out["BB/INN"].map(lambda x: f"{float(x):.2f}" if pd.notna(x) else "")
         for c in [k for k in ["R","K-L"] if k in out.columns]:
-            out[c] = pd.to_numeric(out[c], errors="coerce").fillna(0).astype("Int64").astype(str).replace("<NA>", "")
-
+            out[c] = (
+                pd.to_numeric(out[c], errors="coerce")
+                  .replace([np.inf, -np.inf], np.nan)  # kill inf/-inf from div-by-zero, etc.
+                  .round(0)                            # make any 2.5 → 3, etc., so Int64 is safe
+                  .fillna(0)
+                  .astype("Int64")
+                  .astype(str)
+                  .replace("<NA>", "")
+            )
     int_like_by_tab = {
         "Hitting":  ["PA","AB","H","R","RBI","BB","SO","2B","3B","HR","SB","QAB","XBH","TB","2OUTRBI","H_RISP","AB_RISP","HHB"],
         "Pitching": ["H","R","ER","BB","SO","HR","BBS","CS","SB","K-L","BF","#P","HBP",
@@ -713,7 +737,15 @@ def _format_cumulative(df, tab_name):
         if c in pct_cols:
             continue
         if c in int_like:
-            out[c] = pd.to_numeric(out[c], errors="coerce").fillna(0).astype("Int64").astype(str).replace("<NA>", "")
+            out[c] = (
+                pd.to_numeric(out[c], errors="coerce")
+                  .replace([np.inf, -np.inf], np.nan)  # kill inf/-inf from div-by-zero, etc.
+                  .round(0)                            # make any 2.5 → 3, etc., so Int64 is safe
+                  .fillna(0)
+                  .astype("Int64")
+                  .astype(str)
+                  .replace("<NA>", "")
+            )
         else:
             if pd.api.types.is_numeric_dtype(out[c]):
                 out[c] = out[c].map(lambda x: f"{float(x):.3f}" if pd.notna(x) else "")
