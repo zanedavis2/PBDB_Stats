@@ -900,7 +900,6 @@ def load_cumulative():
         try:
             if os.path.exists(path):
                 df_all = pd.read_csv(path, header=1, dtype=str)  # ✅ read as strings safely
-                st.success(f"Loaded cumulative file: {os.path.basename(path)}")
                 break
         except Exception as e:
             st.warning(f"Failed reading {path}: {e}")
@@ -925,9 +924,6 @@ def load_cumulative():
         "Fielding": prepare_fielding_stats(df_all),
         "Catching": prepare_catching_stats(df_all),
     }
-
-    st.write("✅ Columns detected:", list(df_all.columns)[:20])
-    st.write("✅ Rows detected:", len(df_all))
     return frames
 
 def load_series(stat_types, selected_series):
