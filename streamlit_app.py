@@ -880,30 +880,44 @@ def load_cumulative():
 def load_series(stat_types, selected_series):
     frames = {}
     sel = selected_series or []
+
     if "Hitting" in stat_types:
         try:
             _hit = aggregate_stats_hitting(sel)
             frames["Hitting"] = prepare_batting_stats(generate_aggregated_hitting_df(_hit))
         except Exception:
             frames["Hitting"] = pd.DataFrame()
+
     if "Pitching" in stat_types:
         try:
             _pit = aggregate_stats_pitching(sel)
-            frames["Pitching"] = prepare_pitching_stats(generate_aggregated_pitching_df(_pit))
-        except Exception:
+            pitch_df = prepare_pitching_stats(generate_aggregated_pitching_df(_pit))
+
+            # ✅ Filter out pitchers below qualification threshold
+            if "IP" in pitch_df.columns:
+                min_ip = QUAL_MINS.get("Pitching", 0.1)
+                pitch_df = pitch_df[pitch_df["IP"].fillna(0) >= min_ip].reset_index(drop=True)
+
+            frames["Pitching"] = pitch_df
+
+        except Exception as e:
+            st.error(f"Pitching aggregation failed: {e}")
             frames["Pitching"] = pd.DataFrame()
+
     if "Fielding" in stat_types:
         try:
             _fld = aggregate_stats_fielding(sel)
             frames["Fielding"] = prepare_fielding_stats(_fld)
         except Exception:
             frames["Fielding"] = pd.DataFrame()
+
     if "Catching" in stat_types:
         try:
             _cat = aggregate_stats_catching(sel)
             frames["Catching"] = prepare_catching_stats(clean_df(_cat))
         except Exception:
             frames["Catching"] = pd.DataFrame()
+
     return frames
 
 # Apply qualification mins (drop rows below thresholds)
