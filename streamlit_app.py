@@ -818,36 +818,32 @@ RATE_COLS = {
 def _apply_display_formatting(df, tab_name):
     if df is None or df.empty:
         return df, {}
+
     out = df.copy()
 
     # Hide internal columns (prefixed with '_')
     internal_cols = [c for c in out.columns if isinstance(c, str) and c.startswith('_')]
     out = out[[c for c in out.columns if c not in internal_cols]]
 
-    # Percent columns -> XX.XX%
-    pct_cols = [c for c in out.columns if isinstance(c, str) and c.strip().endswith('%') and pd.api.types.is_numeric_dtype(out[c])]
+    # ✅ Format all columns ending in "%" consistently
+    pct_cols = [c for c in out.columns if isinstance(c, str) and c.strip().endswith('%')]
     for c in pct_cols:
-        s = out[c].astype(float)
-        vals = s.replace([np.inf, -np.inf], np.nan).dropna().abs()
-        if len(vals) == 0:
-            scale = 1.0
-        else:
-            maxv = vals.max()
-            scale = 100.0 if maxv <= 1.0 else (10.0 if maxv <= 10.0 else 1.0)
-        out[c] = (s * scale).map(lambda x: f"{x:.2f}%" if pd.notna(x) else "")
+        out[c] = pd.to_numeric(out[c], errors="coerce").apply(
+            lambda x: f"{x:.2f}%" if pd.notna(x) else ""
+        )
 
-    # Non-percent formatting
-    if tab_name == "Pitching":
-        # All remaining numeric (non-% columns) to 2 decimals
-        for c in out.columns:
-            if isinstance(c, str) and not c.endswith('%') and pd.api.types.is_numeric_dtype(out[c]):
-                out[c] = out[c].apply(lambda x: f"{x:.2f}" if pd.notna(x) else "")
-    else:
-        # Hitting non-% rate-like columns as .xxx
+    # ✅ Format hitting-style rate columns (.xxx format)
+    if tab_name == "Hitting":
         non_pct_rate_cols = [c for c in RATE_COLS.get(tab_name, []) if c in out.columns and not c.strip().endswith('%')]
         for c in non_pct_rate_cols:
             if pd.api.types.is_numeric_dtype(out[c]):
-                out[c] = out[c].apply(lambda x: (f"{x:.3f}" if pd.notna(x) else "")).str.replace("0.", ".", regex=False)
+                out[c] = out[c].apply(lambda x: f".{int(round(x*1000)):03d}" if pd.notna(x) and x > 0 else "")
+
+    # ✅ Format pitching numeric columns (2 decimals)
+    elif tab_name == "Pitching":
+        for c in out.columns:
+            if isinstance(c, str) and not c.endswith('%') and pd.api.types.is_numeric_dtype(out[c]):
+                out[c] = out[c].apply(lambda x: f"{x:.2f}" if pd.notna(x) else "")
 
     column_config = {}
     return out, column_config
