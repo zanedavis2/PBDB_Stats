@@ -713,7 +713,7 @@ def _format_cumulative(df, tab_name):
         if "ERA" in out.columns:
             out["ERA"] = out["ERA"].map(lambda x: f"{float(x):.2f}" if pd.notna(x) else "")
         if "IP" in out.columns:
-            out["IP"] = out["ERA"].map(lambda x: f"{float(x):.2f}" if pd.notna(x) else "")
+            out["IP"] = out["IP"].map(lambda x: f"{float(x):.2f}" if pd.notna(x) else "")
         if "WHIP" in out.columns:
             out["WHIP"] = out["WHIP"].map(lambda x: f"{float(x):.2f}" if pd.notna(x) else "")
         if "BB/INN" in out.columns:
