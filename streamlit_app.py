@@ -758,6 +758,14 @@ def _append_totals(df, tab_name):
             totals["CS%"] = round(CS / att_sum * 100, 1) if att_sum else 0
 
     totals_df = pd.DataFrame([totals]).reindex(columns=base.columns, fill_value="")
+    if "Last" in base.columns:
+        lower_last = base["Last"].astype(str).str.strip().str.lower()
+        base["_is_total"] = lower_last.isin(["totals", "total"])
+        base = pd.concat([
+            base[~base["_is_total"]],
+            base[base["_is_total"]]
+        ]).drop(columns="_is_total").reset_index(drop=True)
+
     return pd.concat([base, totals_df], ignore_index=True)
 
 # Utility: filter selected players (by Last)
