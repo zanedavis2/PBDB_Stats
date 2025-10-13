@@ -556,7 +556,6 @@ def _format_series(df, tab_name):
 
     # Helpers
     def _dot3(x):
-        # treat blanks/whitespace as missing
         if x is None or (isinstance(x, str) and not x.strip()):
             return ""
         # try to parse tolerant of commas/percent signs
