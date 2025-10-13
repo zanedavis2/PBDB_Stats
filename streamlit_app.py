@@ -972,7 +972,7 @@ for tab_name, tab in zip(tabs_to_show, tabs):
                 continue
 
         if tab_name == "Pitching":
-            df_filtered = df_filtered.drop(columns=[c for c in ["FIP", "SB%"] if c in df_filtered.columns])
+            df_filtered = df_filtered.drop(columns=[c for c in ["FIP", "SB%", "BA/RISP"] if c in df_filtered.columns])
 
 
         
