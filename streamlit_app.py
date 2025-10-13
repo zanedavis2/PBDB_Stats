@@ -489,39 +489,54 @@ def _append_totals(df, tab_name):
             if c in ["Last","First"] or c in totals: continue
             if pd.api.types.is_numeric_dtype(base[c]): totals[c] = ssum(c)
 
-    elif tab_name == "Pitching":
+        elif tab_name == "Pitching":
         # Sum raw counting stats used by derived rates
         for raw in ["IP", "ER", "H", "BB", "HR", "SO", "BF", "HBP", "SB", "CS", "#P"]:
             if raw in base.columns:
                 totals[raw] = ssum(raw)
 
-        IP  = totals.get("IP", 0.0)
-        ER  = totals.get("ER", 0.0)
-        Hh  = totals.get("H",  0.0)
-        BBh = totals.get("BB", 0.0)
-        HRh = totals.get("HR", 0.0)
-        SOh = totals.get("SO", 0.0)
-        BF  = totals.get("BF", 0.0)
-        HBP = totals.get("HBP", 0.0)
-        SB  = totals.get("SB", 0.0)
-        CS  = totals.get("CS", 0.0)
+        # Detect source: SERIES tables carry internal _* columns; CUMULATIVE does not
+        is_series_like = any(col.startswith("_") for col in base.columns)
 
-        # Derived rate stats (same logic you already use)
-        totals["ERA"]    = round((ER * 9 / IP), 2) if IP else 0
-        totals["WHIP"]   = round((BBh + Hh) / IP, 2) if IP else 0
-        totals["BB/INN"] = round(BBh / IP, 2) if IP else 0
-        totals["FIP"]    = round(((13 * HRh + 3 * BBh - 2 * SOh) / IP) + 3.1, 2) if IP else 0
-        totals["SB%"]    = round((SB / (SB + CS) * 100), 2) if (SB + CS) else 0
-        totals["BAA"]    = round(Hh / (BF - BBh - HBP), 3) if (BF - BBh - HBP) > 0 else 0
-        totals["BABIP"]  = round((Hh - HRh) / (BF - SOh - HRh - BBh - HBP), 3) if (BF - SOh - HRh - BBh - HBP) > 0 else 0
+        if is_series_like:
+            # (Keep your recompute if you want; or average, your choice.
+            # Below keeps your recompute for series.)
+            IP  = totals.get("IP", 0.0)
+            ER  = totals.get("ER", 0.0)
+            Hh  = totals.get("H",  0.0)
+            BBh = totals.get("BB", 0.0)
+            HRh = totals.get("HR", 0.0)
+            SOh = totals.get("SO", 0.0)
+            BF  = totals.get("BF", 0.0)
+            HBP = totals.get("HBP", 0.0)
+            SB  = totals.get("SB", 0.0)
+            CS  = totals.get("CS", 0.0)
 
-        # ✅ Simple average for every visible % column (skip NaNs)
+            totals["ERA"]    = round((ER * 9 / IP), 2) if IP else 0
+            totals["WHIP"]   = round((BBh + Hh) / IP, 2) if IP else 0
+            totals["BB/INN"] = round(BBh / IP, 2) if IP else 0
+            totals["FIP"]    = round(((13 * HRh + 3 * BBh - 2 * SOh) / IP) + 3.1, 2) if IP else 0
+            totals["SB%"]    = round((SB / (SB + CS) * 100), 2) if (SB + CS) else 0
+            totals["BAA"]    = round(Hh / (BF - BBh - HBP), 3) if (BF - BBh - HBP) > 0 else 0
+            totals["BABIP"]  = round((Hh - HRh) / (BF - SOh - HRh - BBh - HBP), 3) if (BF - SOh - HRh - BBh - HBP) > 0 else 0
+        else:
+            # ✅ CUMULATIVE: just average the displayed rate columns to avoid the IP thirds issue
+            for c in ["ERA", "WHIP", "BB/INN", "FIP"]:
+                if c in base.columns:
+                    totals[c] = round(smean(c), 2)
+            for c in ["BAA", "BABIP"]:
+                if c in base.columns:
+                    totals[c] = round(smean(c), 3)
+            if "SB%" in base.columns:
+                totals["SB%"] = round(smean("SB%"), 2)
+
+        # Simple average for every visible % column (skip NaNs)
         pct_cols = [c for c in base.columns if isinstance(c, str) and c.endswith("%")]
         for c in pct_cols:
             col = pd.to_numeric(base[c], errors="coerce")
             totals[c] = round(col.mean(skipna=True), 2) if len(col.dropna()) else 0.0
 
-        # For any other numeric columns not already set, use SUM (keep existing rule)
+        # For any other numeric columns not already set, use SUM
         for c in base.columns:
             if c in ["Last", "First"] or c in totals:
                 continue
