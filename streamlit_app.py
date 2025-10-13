@@ -928,7 +928,7 @@ for tab_name, tab in zip(tabs_to_show, tabs):
         )
 
         if tab_name == "Hitting":
-            with st.expander("Hitting Acronym Key cc", expanded=False):
+            with st.expander("Hitting Acronym Key", expanded=False):
                 st.dataframe(HITTING_KEY, use_container_width=True, hide_index=True)
         elif tab_name == "Pitching":
             with st.expander("Pitching Acronym Key", expanded=False):
