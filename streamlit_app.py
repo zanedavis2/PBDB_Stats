@@ -665,127 +665,102 @@ def _drop_rows_nan_names(df):
 
 # Utility: append a totals row (sum numeric columns)
 def _append_totals(df, tab_name):
+    """Append a single totals row using simple sums and averages (no hidden columns)."""
     if df is None or df.empty:
         return df
+
     base = df.copy()
 
-    # Helper to safe sum (robust if column missing)
-    def ssum(col):
-        if col in base.columns:
-            return pd.to_numeric(base[col], errors="coerce").fillna(0).sum()
-        return 0.0
+    # numeric detection and conversion
+    numeric_cols = [c for c in base.columns if pd.api.types.is_numeric_dtype(base[c])]
+    sums = base[numeric_cols].sum(numeric_only=True)
 
-    total_row = {c: "" for c in base.columns}
-    total_row["Last"] = "Totals"
-    total_row["First"] = ""
+    totals = {c: "" for c in base.columns}
+    totals["Last"] = "Totals"
+    totals["First"] = ""
 
-    if tab_name == "Pitching":
-        IP = ssum("_IP") if "_IP" in base.columns else ssum("IP")
-        ER = ssum("_ER") if "_ER" in base.columns else ssum("ER")
-        H  = ssum("_H")  if "_H"  in base.columns else ssum("H")
-        BB = ssum("_BB") if "_BB" in base.columns else ssum("BB")
-        HR = ssum("_HR") if "_HR" in base.columns else ssum("HR")
-        SO = ssum("_SO") if "_SO" in base.columns else ssum("SO")
-        BF = ssum("_BF") if "_BF" in base.columns else ssum("BF")
-        NP = ssum("_NP") if "_NP" in base.columns else ssum("#P")
-        HBP= ssum("_HBP") if "_HBP" in base.columns else ssum("HBP")
-        STR= ssum("_STR") if "_STR" in base.columns else np.nan
-        FPS= ssum("_FPS") if "_FPS" in base.columns else np.nan
-        FPSO= ssum("_FPSO") if "_FPSO" in base.columns else np.nan
-        FPSH= ssum("_FPSH") if "_FPSH" in base.columns else np.nan
-        GBc= ssum("_GB") if "_GB" in base.columns else np.nan
-        FBc= ssum("_FB") if "_FB" in base.columns else np.nan
-        LDc= ssum("_LD") if "_LD" in base.columns else np.nan
-        HHBc= ssum("_HHB") if "_HHB" in base.columns else np.nan
-        WEAKc= ssum("_WEAK") if "_WEAK" in base.columns else np.nan
-        U3 = ssum("_U3") if "_U3" in base.columns else np.nan
-        SMc= ssum("_SM") if "_SM" in base.columns else np.nan
-        CS = ssum("_CS") if "_CS" in base.columns else ssum("CS")
-        SB = ssum("_SB") if "_SB" in base.columns else ssum("SB")
+    # --- Hitting ---
+    if tab_name == "Hitting":
+        for c in numeric_cols:
+            totals[c] = sums.get(c, 0)
 
-        def rdiv(n, d):  # safe divide
-            return (n / d) if (d and d != 0 and not np.isnan(d)) else np.nan
+        AB = sums.get("AB", 0)
+        H = sums.get("H", 0)
+        BB = sums.get("BB", 0)
+        HBP = sums.get("HBP", 0)
+        SF = sums.get("SF", 0)
+        PA = sums.get("PA", 0)
+        TB = sums.get("TB", 0)
+        SO = sums.get("SO", 0)
+        HR = sums.get("HR", 0)
+        QAB = sums.get("QAB", 0)
+        PS = sums.get("PS", 0)
+        AB_RISP = sums.get("AB_RISP", 0)
+        H_RISP = sums.get("H_RISP", 0)
 
-        total_row.update({
-            "IP": round(IP if not np.isnan(IP) else 0, 2),
-            "ER": ER, "H": H, "BB": BB, "HR": HR, "SO": SO,
-            "ERA": round(rdiv(ER * 9, IP) or 0, 2),
-            "WHIP": round(rdiv(BB + H, IP) or 0, 2),
-            "BB/INN": round(rdiv(BB, IP) or 0, 2),
-            "FIP": round((rdiv((13 * HR + 3 * BB - 2 * SO), IP) or 0) + 3.1, 2),
-            "CS": CS, "SB": SB,
+        totals.update({
+            "AVG": round(H / AB, 3) if AB else 0,
+            "OBP": round((H + BB + HBP) / (AB + BB + HBP + SF), 3) if (AB + BB + HBP + SF) else 0,
+            "SLG": round(TB / AB, 3) if AB else 0,
+            "OPS": round(((H + BB + HBP) / (AB + BB + HBP + SF)) + (TB / AB), 3) if (AB and (AB + BB + HBP + SF)) else 0,
+            "QAB%": round(QAB / PA, 3) if PA else 0,
+            "BB/K": round(BB / SO, 3) if SO else round(BB, 3),
+            "C%": round(1 - (SO / AB), 3) if AB else 0,
+            "BABIP": round((H - HR) / (AB - SO - HR + SF), 3) if (AB - SO - HR + SF) else 0,
+            "BA/RISP": round(H_RISP / AB_RISP, 3) if AB_RISP else 0,
+            "PS/PA": round(PS / PA, 3) if PA else 0,
         })
-        if pd.notna(NP) and NP > 0 and pd.notna(STR): total_row["S%"] = round(STR / NP * 100, 2)
-        if pd.notna(BF) and BF > 0:
-            if pd.notna(FPS):  total_row["FPS%"]  = round(FPS  / BF * 100, 2)
-            if pd.notna(FPSO): total_row["FPSO%"] = round(FPSO / BF * 100, 2)
-            if pd.notna(FPSH): total_row["FPSH%"] = round(FPSH / BF * 100, 2)
-            if pd.notna(U3):   total_row["<3%"]   = round(U3   / BF * 100, 2)
-        bb_balls = (BF - SO - BB - HBP) if pd.notna(BF) else np.nan
-        if pd.notna(NP) and NP > 0 and pd.notna(SMc): total_row["SM%"] = round(SMc / NP * 100, 2)
-        if pd.notna(bb_balls) and bb_balls > 0:
-            if pd.notna(GBc):  total_row["GB%"]  = round(GBc  / bb_balls * 100, 2)
-            if pd.notna(FBc):  total_row["FB%"]  = round(FBc  / bb_balls * 100, 2)
-            if pd.notna(LDc):  total_row["LD%"]  = round(LDc  / bb_balls * 100, 2)
-            if pd.notna(HHBc): total_row["HHB%"] = round(HHBc / bb_balls * 100, 2)
-            if pd.notna(WEAKc):total_row["WEAK%"]= round(WEAKc/ bb_balls * 100, 2)
-        if (SB + CS) > 0: total_row["SB%"] = round(SB / (SB + CS) * 100, 2)
-        denom_baa = (BF - BB - HBP) if pd.notna(BF) else np.nan
-        if pd.notna(denom_baa) and denom_baa > 0: total_row["BAA"] = round(H / denom_baa, 3)
-        denom_babip = (BF - SO - HR - BB - HBP) if pd.notna(BF) else np.nan
-        if pd.notna(denom_babip) and denom_babip > 0: total_row["BABIP"] = round((H - HR) / denom_babip, 3)
 
-    elif tab_name == "Hitting":
-        # ONLY compute metrics; don't introduce new columns beyond base
-        PA, AB, H, BB, HBP, SF = ssum("PA"), ssum("AB"), ssum("H"), ssum("BB"), ssum("HBP"), ssum("SF")
-        TB, R, RBI, SO, HR = ssum("TB"), ssum("R"), ssum("RBI"), ssum("SO"), ssum("HR")
-        QAB = ssum("QAB")
-        LDp = base["LD%"].astype(float).mean() if "LD%" in base.columns else np.nan  # not used if column missing
-        FBp = base["FB%"].astype(float).mean() if "FB%" in base.columns else np.nan
-        GBp = base["GB%"].astype(float).mean() if "GB%" in base.columns else np.nan
-        HHBp = base["HHB%"].astype(float).mean() if "HHB%" in base.columns else np.nan
+        if "HHB" in base.columns and AB > 0:
+            totals["HHB%"] = round(sums.get("HHB", 0) / AB, 3)
 
-        denom_obp = AB + BB + HBP + SF
-        total_row.update({
-            "PA": PA, "AB": AB, "H": H, "BB": BB, "R": R, "RBI": RBI, "TB": TB, "SO": SO, "HR": HR, "QAB": QAB,
-            "AVG": round((H/AB) if AB else 0, 3),
-            "OBP": round(((H+BB+HBP)/denom_obp) if denom_obp else 0, 3),
-            "SLG": round((TB/AB) if AB else 0, 3),
-            "OPS": 0,  # fill after SLG/OBP
-            "QAB%": round((QAB / PA) if PA else 0, 3),
-            "BB/K": round((BB/SO) if SO else BB, 3),
-            "C%": round((1 - (SO/AB)) if AB else 0, 3),
+    # --- Pitching ---
+    elif tab_name == "Pitching":
+        for c in numeric_cols:
+            totals[c] = sums.get(c, 0)
+
+        IP = sums.get("IP", 0)
+        ER = sums.get("ER", 0)
+        H = sums.get("H", 0)
+        BB = sums.get("BB", 0)
+        HR = sums.get("HR", 0)
+        SO = sums.get("SO", 0)
+        BF = sums.get("BF", 0)
+        HBP = sums.get("HBP", 0)
+        CS = sums.get("CS", 0)
+        SB = sums.get("SB", 0)
+
+        totals.update({
+            "ERA": round((ER * 9 / IP), 2) if IP else 0,
+            "WHIP": round((BB + H) / IP, 2) if IP else 0,
+            "BB/INN": round(BB / IP, 2) if IP else 0,
+            "FIP": round(((13 * HR + 3 * BB - 2 * SO) / IP) + 3.1, 2) if IP else 0,
+            "SB%": round(SB / (SB + CS) * 100, 2) if (SB + CS) else 0,
         })
-        total_row["OPS"] = round(total_row["OBP"] + total_row["SLG"], 3)
-        # If the rate columns exist in base, set their totals as weighted or leave blank
-        if "HHB%" in base.columns and AB:
-            total_row["HHB%"] = round((ssum("HHB") / AB) if "HHB" in base.columns else HHBp, 3)
-        if "LD%" in base.columns and "FB%" in base.columns and "GB%" in base.columns:
-            # optional: leave blank; the row is already useful without raw LD/FB/GB
-            pass
-        if "BABIP" in base.columns:
-            denom_babip = AB - SO - HR + SF
-            total_row["BABIP"] = round(((H - HR)/denom_babip) if denom_babip else 0, 3)
-        if "BA/RISP" in base.columns and "H_RISP" in base.columns and "AB_RISP" in base.columns:
-            hr = ssum("H_RISP"); abr = ssum("AB_RISP")
-            total_row["BA/RISP"] = round((hr/abr) if abr else 0, 3)
-        if "PS/PA" in base.columns and "PS" in base.columns:
-            total_row["PS/PA"] = round((ssum("PS")/PA) if PA else 0, 3)
 
+    # --- Fielding ---
     elif tab_name == "Fielding":
-        TC, A, PO = ssum("TC"), ssum("A"), ssum("PO")
-        total_row.update({"TC": TC, "A": A, "PO": PO, "E": ssum("E"), "DP": ssum("DP")})
-        total_row["FPCT"] = round(((A + PO) / TC) if TC else 0, 3)
+        for c in numeric_cols:
+            totals[c] = sums.get(c, 0)
+        TC = sums.get("TC", 0)
+        A = sums.get("A", 0)
+        PO = sums.get("PO", 0)
+        totals["FPCT"] = round((A + PO) / TC, 3) if TC else 0
 
+    # --- Catching ---
     elif tab_name == "Catching":
-        total_row.update({"INN": ssum("INN"), "PB": ssum("PB"), "CS": ssum("CS")})
-        if "SB%" in base.columns and "SB-ATT" in base.columns:
-            # Leave display-only fields to base; don't add new ones
-            pass
+        for c in numeric_cols:
+            totals[c] = sums.get(c, 0)
+        ATT = 0
+        if "SB-ATT" in base.columns:
+            split_sb = base["SB-ATT"].astype(str).str.split("-", expand=True)
+            sb_total = pd.to_numeric(split_sb[0], errors="coerce").fillna(0).sum()
+            att_total = pd.to_numeric(split_sb[1], errors="coerce").fillna(0).sum()
+            ATT = att_total
+            totals["SB-ATT"] = f"{int(sb_total)}-{int(att_total)}"
+            totals["CS%"] = round(sums.get("CS", 0) / att_total * 100, 1) if att_total else 0
 
-    # === CRITICAL: align totals to *existing* columns only ===
-    totals_df = pd.DataFrame([total_row]).reindex(columns=base.columns, fill_value="")
-
+    totals_df = pd.DataFrame([totals]).reindex(columns=base.columns, fill_value="")
     return pd.concat([base, totals_df], ignore_index=True)
 
 # Utility: filter selected players (by Last)
