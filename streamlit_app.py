@@ -5,15 +5,6 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 
-"""
-This Streamlit app wraps the original PBDB stats functions in a single-file interface
-that lets you select series (e.g., ["wake", "jmu"]) or upload cumulative CSVs, and
-then displays filterable tables for Hitting, Pitching, Fielding, and Catching.
-
-The absolute majority of the logic is copied directly from your original file, with
-only light edits for small bugs and to fit Streamlit I/O.
-"""
-
 # =====================
 # Original helper funcs
 # =====================
