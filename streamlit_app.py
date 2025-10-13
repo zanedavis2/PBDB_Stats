@@ -943,11 +943,16 @@ def _apply_display_formatting(df, tab_name):
 # Data loading: cumulative -> read one file and let the prep funcs select columns
 
 def load_cumulative():
+    import glob
+    import os
+    import pandas as pd
+    import streamlit as st
+
     possible_paths = [
         "cumulative.csv",
         "/mnt/data/cumulative.csv",
     ]
-    # Add any file with 'cumulative' in name
+    # Include any CSV that has 'cumulative' in the name (case-insensitive)
     possible_paths += [
         p for p in glob.glob("*.csv") + glob.glob("/mnt/data/*.csv")
         if "cumulative" in os.path.basename(p).lower()
@@ -957,7 +962,8 @@ def load_cumulative():
     for path in possible_paths:
         try:
             if os.path.exists(path):
-                df_all = pd.read_csv(path)
+                # ✅ Read with header=1 to skip the "Batting" row
+                df_all = pd.read_csv(path, header=1)
                 st.success(f"Loaded cumulative file: {os.path.basename(path)}")
                 break
         except Exception as e:
@@ -967,15 +973,21 @@ def load_cumulative():
         st.error("No valid cumulative CSV found.")
         return {s: pd.DataFrame() for s in STAT_TYPES_ALL}
 
+    # Clean and prepare the four stat sections
     df_all = clean_df(df_all)
-    return {
+
+    frames = {
         "Hitting": prepare_batting_stats(df_all),
         "Pitching": prepare_pitching_stats(df_all),
         "Fielding": prepare_fielding_stats(df_all),
         "Catching": prepare_catching_stats(df_all),
     }
 
-# Data loading: series -> aggregate using existing funcs
+    # Debugging info (optional)
+    st.write("✅ Columns detected:", list(df_all.columns)[:20])
+    st.write("✅ Rows detected:", len(df_all))
+
+    return frames
 
 def load_series(stat_types, selected_series):
     frames = {}
