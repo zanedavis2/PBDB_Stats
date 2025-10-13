@@ -943,11 +943,6 @@ def _apply_display_formatting(df, tab_name):
 # Data loading: cumulative -> read one file and let the prep funcs select columns
 
 def load_cumulative():
-    import glob
-    import os
-    import pandas as pd
-    import streamlit as st
-
     possible_paths = [
         "cumulative.csv",
         "/mnt/data/cumulative.csv",
@@ -984,8 +979,8 @@ def load_cumulative():
     }
 
     # Debugging info (optional)
-    st.write("✅ Columns detected:", list(df_all.columns)[:20])
-    st.write("✅ Rows detected:", len(df_all))
+    #st.write("✅ Columns detected:", list(df_all.columns)[:20])
+    #st.write("✅ Rows detected:", len(df_all))
 
     return frames
 
