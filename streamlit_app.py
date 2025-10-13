@@ -490,11 +490,15 @@ def _append_totals(df, tab_name):
             if pd.api.types.is_numeric_dtype(base[c]): totals[c] = ssum(c)
 
     elif tab_name == "Pitching":
+        # Sum the raw counting stats we use for derived %/rates
         for raw in ["IP","ER","H","BB","HR","SO","BF","HBP","SB","CS","#P"]:
-            if raw in base.columns: totals[raw] = ssum(raw)
+            if raw in base.columns:
+                totals[raw] = ssum(raw)
+
         IP, ER, Hh, BBh, HRh, SOh = totals.get("IP",0), totals.get("ER",0), totals.get("H",0), totals.get("BB",0), totals.get("HR",0), totals.get("SO",0)
         BF, HBP, SB, CS, NP = totals.get("BF",0), totals.get("HBP",0), totals.get("SB",0), totals.get("CS",0), totals.get("#P",0)
 
+        # Derived rate stats
         totals["ERA"]    = round((ER * 9 / IP), 2) if IP else 0
         totals["WHIP"]   = round((BBh + Hh) / IP, 2) if IP else 0
         totals["BB/INN"] = round(BBh / IP, 2) if IP else 0
@@ -503,10 +507,42 @@ def _append_totals(df, tab_name):
         totals["BAA"]    = round(Hh / (BF - BBh - HBP), 3) if (BF - BBh - HBP) > 0 else 0
         totals["BABIP"]  = round((Hh - HRh) / (BF - SOh - HRh - BBh - HBP), 3) if (BF - SOh - HRh - BBh - HBP) > 0 else 0
 
+        # ✅ Weighted % from internal counts (preferred over mean of player %)
+        STR  = ssum("_STR"); NP_i  = ssum("_NP")
+        FPS  = ssum("_FPS"); BF_i  = ssum("_BF")
+        FPSO = ssum("_FPSO"); FPSH = ssum("_FPSH")
+        SM   = ssum("_SM")
+        GB   = ssum("_GB");  FB_i  = ssum("_FB"); LD_i = ssum("_LD")
+        HHB  = ssum("_HHB"); WEAK  = ssum("_WEAK")
+        U3   = ssum("_U3")
+
+        # Batted balls denominator for rates below
+        BIP = max(0.0, BF_i - ssum("_SO") - ssum("_BB") - ssum("_HBP"))
+
+        def pct(num, den, nd=2):
+            return round((num / den) * 100, nd) if den and den > 0 else 0.0
+
+        # Recompute series totals % precisely
+        totals["S%"]    = pct(STR, NP_i, 2)
+        totals["FPS%"]  = pct(FPS, BF_i, 2)
+        totals["FPSO%"] = pct(FPSO, BF_i, 2)
+        totals["FPSH%"] = pct(FPSH, BF_i, 2)
+        totals["SM%"]   = pct(SM, NP_i, 2)
+        totals["LD%"]   = pct(LD_i, BIP, 2)
+        totals["FB%"]   = pct(FB_i, BIP, 2)
+        totals["GB%"]   = pct(GB,  BIP, 2)
+        totals["HHB%"]  = pct(HHB, BIP, 2)
+        totals["WEAK%"] = pct(WEAK, BIP, 2)
+        totals["<3%"]   = pct(U3,  BF_i, 2)
+
+        # For any other columns not explicitly set above:
         for c in base.columns:
-            if c in ["Last","First"] or c in totals: continue
-            if isinstance(c, str) and c.endswith("%"): totals[c] = round(smean(c), 2)
-            elif pd.api.types.is_numeric_dtype(base[c]): totals[c] = ssum(c)
+            if c in ["Last","First"] or c in totals:
+                continue
+            if isinstance(c, str) and c.endswith("%"):
+                totals[c] = round(smean(c), 2)  # fallback if a % wasn’t covered
+            elif pd.api.types.is_numeric_dtype(base[c]):
+                totals[c] = ssum(c)
 
     elif tab_name == "Fielding":
         for raw in ["TC","A","PO","E","DP"]:
