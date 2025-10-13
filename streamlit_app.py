@@ -665,100 +665,90 @@ def _drop_rows_nan_names(df):
 
 # Utility: append a totals row (sum numeric columns)
 def _append_totals(df, tab_name):
-    """Append a single totals row using simple sums and averages (no hidden columns)."""
+    """Append a single totals row for cumulative data with correct recalculated averages."""
     if df is None or df.empty:
         return df
 
     base = df.copy()
-
-    # numeric detection and conversion
-    numeric_cols = [c for c in base.columns if pd.api.types.is_numeric_dtype(base[c])]
-    sums = base[numeric_cols].sum(numeric_only=True)
-
     totals = {c: "" for c in base.columns}
-    totals["Last"] = "Totals"
-    totals["First"] = ""
+    totals["Last"], totals["First"] = "Totals", ""
 
-    # --- Hitting ---
+    def ssum(c):
+        return pd.to_numeric(base.get(c, 0), errors="coerce").fillna(0).sum()
+
+    # -----------------------
+    # HITTING TOTALS
+    # -----------------------
     if tab_name == "Hitting":
-        for c in numeric_cols:
-            totals[c] = sums.get(c, 0)
-
-        AB = sums.get("AB", 0)
-        H = sums.get("H", 0)
-        BB = sums.get("BB", 0)
-        HBP = sums.get("HBP", 0)
-        SF = sums.get("SF", 0)
-        PA = sums.get("PA", 0)
-        TB = sums.get("TB", 0)
-        SO = sums.get("SO", 0)
-        HR = sums.get("HR", 0)
-        QAB = sums.get("QAB", 0)
-        PS = sums.get("PS", 0)
-        AB_RISP = sums.get("AB_RISP", 0)
-        H_RISP = sums.get("H_RISP", 0)
+        PA, AB, H = ssum("PA"), ssum("AB"), ssum("H")
+        BB, HBP, SF = ssum("BB"), ssum("HBP"), ssum("SF")
+        TB, R, RBI, SO = ssum("TB"), ssum("R"), ssum("RBI"), ssum("SO")
+        HR, QAB, PS = ssum("HR"), ssum("QAB"), ssum("PS")
+        AB_RISP, H_RISP = ssum("AB_RISP"), ssum("H_RISP")
 
         totals.update({
-            "AVG": round(H / AB, 3) if AB else 0,
-            "OBP": round((H + BB + HBP) / (AB + BB + HBP + SF), 3) if (AB + BB + HBP + SF) else 0,
-            "SLG": round(TB / AB, 3) if AB else 0,
-            "OPS": round(((H + BB + HBP) / (AB + BB + HBP + SF)) + (TB / AB), 3) if (AB and (AB + BB + HBP + SF)) else 0,
-            "QAB%": round(QAB / PA, 3) if PA else 0,
-            "BB/K": round(BB / SO, 3) if SO else round(BB, 3),
-            "C%": round(1 - (SO / AB), 3) if AB else 0,
-            "BABIP": round((H - HR) / (AB - SO - HR + SF), 3) if (AB - SO - HR + SF) else 0,
-            "BA/RISP": round(H_RISP / AB_RISP, 3) if AB_RISP else 0,
-            "PS/PA": round(PS / PA, 3) if PA else 0,
+            "PA": PA, "AB": AB, "H": H, "BB": BB, "HBP": HBP, "SF": SF,
+            "TB": TB, "R": R, "RBI": RBI, "SO": SO, "HR": HR,
+            "QAB": QAB, "PS": PS,
         })
 
-        if "HHB" in base.columns and AB > 0:
-            totals["HHB%"] = round(sums.get("HHB", 0) / AB, 3)
+        # Derived cumulative metrics
+        totals["AVG"] = round(H / AB, 3) if AB else 0
+        totals["OBP"] = round((H + BB + HBP) / (AB + BB + HBP + SF), 3) if (AB + BB + HBP + SF) else 0
+        totals["SLG"] = round(TB / AB, 3) if AB else 0
+        totals["OPS"] = round(totals["OBP"] + totals["SLG"], 3)
+        totals["QAB%"] = round(QAB / PA, 3) if PA else 0
+        totals["BB/K"] = round(BB / SO, 3) if SO else round(BB, 3)
+        totals["C%"] = round(1 - (SO / AB), 3) if AB else 0
+        totals["BABIP"] = round((H - HR) / (AB - SO - HR + SF), 3) if (AB - SO - HR + SF) else 0
+        totals["BA/RISP"] = round(H_RISP / AB_RISP, 3) if AB_RISP else 0
+        totals["PS/PA"] = round(PS / PA, 3) if PA else 0
 
-    # --- Pitching ---
+        if "HHB" in base.columns:
+            totals["HHB"] = ssum("HHB")
+            totals["HHB%"] = round(totals["HHB"] / AB, 3) if AB else 0
+
+    # -----------------------
+    # PITCHING TOTALS
+    # -----------------------
     elif tab_name == "Pitching":
-        for c in numeric_cols:
-            totals[c] = sums.get(c, 0)
-
-        IP = sums.get("IP", 0)
-        ER = sums.get("ER", 0)
-        H = sums.get("H", 0)
-        BB = sums.get("BB", 0)
-        HR = sums.get("HR", 0)
-        SO = sums.get("SO", 0)
-        BF = sums.get("BF", 0)
-        HBP = sums.get("HBP", 0)
-        CS = sums.get("CS", 0)
-        SB = sums.get("SB", 0)
+        IP, ER, H, BB, HR, SO = ssum("IP"), ssum("ER"), ssum("H"), ssum("BB"), ssum("HR"), ssum("SO")
+        BF, HBP, SB, CS = ssum("BF"), ssum("HBP"), ssum("SB"), ssum("CS")
 
         totals.update({
-            "ERA": round((ER * 9 / IP), 2) if IP else 0,
-            "WHIP": round((BB + H) / IP, 2) if IP else 0,
-            "BB/INN": round(BB / IP, 2) if IP else 0,
-            "FIP": round(((13 * HR + 3 * BB - 2 * SO) / IP) + 3.1, 2) if IP else 0,
-            "SB%": round(SB / (SB + CS) * 100, 2) if (SB + CS) else 0,
+            "IP": round(IP, 2), "ER": ER, "H": H, "BB": BB,
+            "HR": HR, "SO": SO, "BF": BF, "HBP": HBP, "SB": SB, "CS": CS,
         })
 
-    # --- Fielding ---
+        totals["ERA"] = round((ER * 9 / IP), 2) if IP else 0
+        totals["WHIP"] = round((BB + H) / IP, 2) if IP else 0
+        totals["BB/INN"] = round(BB / IP, 2) if IP else 0
+        totals["FIP"] = round(((13 * HR + 3 * BB - 2 * SO) / IP) + 3.1, 2) if IP else 0
+        totals["SB%"] = round(SB / (SB + CS) * 100, 1) if (SB + CS) else 0
+        totals["BAA"] = round(H / (BF - BB - HBP), 3) if (BF - BB - HBP) > 0 else 0
+        totals["BABIP"] = round((H - HR) / (BF - SO - HR - BB - HBP), 3) if (BF - SO - HR - BB - HBP) > 0 else 0
+
+    # -----------------------
+    # FIELDING TOTALS
+    # -----------------------
     elif tab_name == "Fielding":
-        for c in numeric_cols:
-            totals[c] = sums.get(c, 0)
-        TC = sums.get("TC", 0)
-        A = sums.get("A", 0)
-        PO = sums.get("PO", 0)
+        TC, A, PO, E, DP = ssum("TC"), ssum("A"), ssum("PO"), ssum("E"), ssum("DP")
+        totals.update({"TC": TC, "A": A, "PO": PO, "E": E, "DP": DP})
         totals["FPCT"] = round((A + PO) / TC, 3) if TC else 0
 
-    # --- Catching ---
+    # -----------------------
+    # CATCHING TOTALS
+    # -----------------------
     elif tab_name == "Catching":
-        for c in numeric_cols:
-            totals[c] = sums.get(c, 0)
-        ATT = 0
+        INN, PB, CS = ssum("INN"), ssum("PB"), ssum("CS")
+        totals.update({"INN": INN, "PB": PB, "CS": CS})
+
         if "SB-ATT" in base.columns:
-            split_sb = base["SB-ATT"].astype(str).str.split("-", expand=True)
-            sb_total = pd.to_numeric(split_sb[0], errors="coerce").fillna(0).sum()
-            att_total = pd.to_numeric(split_sb[1], errors="coerce").fillna(0).sum()
-            ATT = att_total
-            totals["SB-ATT"] = f"{int(sb_total)}-{int(att_total)}"
-            totals["CS%"] = round(sums.get("CS", 0) / att_total * 100, 1) if att_total else 0
+            split = base["SB-ATT"].astype(str).str.split("-", expand=True)
+            sb_sum = pd.to_numeric(split[0], errors="coerce").fillna(0).sum()
+            att_sum = pd.to_numeric(split[1], errors="coerce").fillna(0).sum()
+            totals["SB-ATT"] = f"{int(sb_sum)}-{int(att_sum)}"
+            totals["CS%"] = round(CS / att_sum * 100, 1) if att_sum else 0
 
     totals_df = pd.DataFrame([totals]).reindex(columns=base.columns, fill_value="")
     return pd.concat([base, totals_df], ignore_index=True)
