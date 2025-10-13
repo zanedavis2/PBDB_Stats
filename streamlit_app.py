@@ -565,15 +565,7 @@ def _format_series(df, tab_name):
             return "-." + s[3:]
         return s
 
-    def _dot2(x):
-        if pd.isna(x):
-            return ""
-        s = f"{float(x):.2f}"
-        if s.startswith("0."):
-            return "." + s[2:]
-        if s.startswith("-0."):
-            return "-." + s[3:]
-        return s
+ 
 
     pct_cols = [c for c in out.columns if isinstance(c, str) and c.endswith("%")]
 
