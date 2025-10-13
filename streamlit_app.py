@@ -489,7 +489,7 @@ def _append_totals(df, tab_name):
             if c in ["Last","First"] or c in totals: continue
             if pd.api.types.is_numeric_dtype(base[c]): totals[c] = ssum(c)
 
-        elif tab_name == "Pitching":
+    elif tab_name == "Pitching":
         # Sum raw counting stats used by derived rates
         for raw in ["IP", "ER", "H", "BB", "HR", "SO", "BF", "HBP", "SB", "CS", "#P"]:
             if raw in base.columns:
