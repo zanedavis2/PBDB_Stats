@@ -556,21 +556,21 @@ def _format_series(df, tab_name):
 
     # Helpers
     def _dot3(x):
-    # treat blanks/whitespace as missing
-    if x is None or (isinstance(x, str) and not x.strip()):
-        return ""
-    # try to parse tolerant of commas/percent signs
-    try:
-        v = float(str(x).replace(",", "").replace("%", ""))
-    except Exception:
-        return ""  # anything non-numeric becomes blank
-
-    s = f"{v:.3f}"
-    if 0 <= v < 1:     # 0.500 -> .500
-        s = "." + s[2:]
-    elif -1 < v < 0:   # -0.250 -> -.250
-        s = "-." + s[3:]
-    return s
+        # treat blanks/whitespace as missing
+        if x is None or (isinstance(x, str) and not x.strip()):
+            return ""
+        # try to parse tolerant of commas/percent signs
+        try:
+            v = float(str(x).replace(",", "").replace("%", ""))
+        except Exception:
+            return ""  # anything non-numeric becomes blank
+    
+        s = f"{v:.3f}"
+        if 0 <= v < 1:     # 0.500 -> .500
+            s = "." + s[2:]
+        elif -1 < v < 0:   # -0.250 -> -.250
+            s = "-." + s[3:]
+        return s
 
 
  
