@@ -959,7 +959,7 @@ def load_cumulative():
             if os.path.exists(path):
                 # ✅ Read with header=1 to skip the "Batting" row
                 df_all = pd.read_csv(path, header=1)
-                st.success(f"Loaded cumulative file: {os.path.basename(path)}")
+                #st.success(f"Loaded cumulative file: {os.path.basename(path)}")
                 break
         except Exception as e:
             st.warning(f"Failed reading {path}: {e}")
