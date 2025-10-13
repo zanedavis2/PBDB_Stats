@@ -971,6 +971,10 @@ for tab_name, tab in zip(tabs_to_show, tabs):
                 )
                 continue
 
+        if tab_name == "Pitching":
+            df_filtered = df_filtered.drop(columns=[c for c in ["FIP", "SB%", "BA/RISP"] if c in d
+
+        
         if df_filtered.empty:
             if selected_players:
                 st.warning(f"No **{tab_name}** rows match selected player(s).")
