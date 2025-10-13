@@ -829,43 +829,39 @@ def _apply_display_formatting(df, tab_name):
 
     out = df.copy()
 
-    # Hide internal columns (prefixed with '_')
-    internal_cols = [c for c in out.columns if isinstance(c, str) and c.startswith('_')]
-    out = out[[c for c in out.columns if c not in internal_cols]]
+    # Detect cumulative (very large percent magnitudes)
+    is_cumulative = (
+        out.filter(like="%").apply(pd.to_numeric, errors="coerce").mean().mean() > 2
+        or out["Last"].astype(str).str.contains("TOTAL", case=False).any()
+    )
 
-    # --- Strict percent formatting: ALWAYS x100 for columns that end with '%' ---
-    pct_cols = [c for c in out.columns if isinstance(c, str) and c.strip().endswith('%')]
+    pct_cols = [c for c in out.columns if c.endswith("%")]
+
     for c in pct_cols:
-        # make numeric, multiply by 100, format 2 decimals + %
         vals = pd.to_numeric(out[c], errors="coerce")
-        out[c] = (vals * 100).map(lambda x: f"{x:.2f}%" if pd.notna(x) else "")
+        if not is_cumulative:
+            vals = vals * 100  # filtered → scale to %
+        out[c] = vals.map(lambda x: f"{x:.2f}%" if pd.notna(x) else "")
 
-    # Non-percent rate formatting
-    if tab_name == "Pitching":
-        # Show two decimals for all remaining numeric, except those already stringified above
-        for c in out.columns:
-            if c in pct_cols:
-                continue
-            if pd.api.types.is_numeric_dtype(out[c]):
-                out[c] = out[c].apply(lambda x: f"{x:.2f}" if pd.notna(x) else "")
-    else:
-        # Hitting: show .xxx style for key rate-like columns that are NOT '%' columns
-        non_pct_rate_cols = [c for c in RATE_COLS.get(tab_name, []) if c in out.columns and not c.strip().endswith('%')]
+    if tab_name == "Hitting":
+        non_pct_rate_cols = [c for c in ["AVG","OBP","SLG","OPS","BABIP","BA/RISP"] if c in out.columns]
         for c in non_pct_rate_cols:
             if pd.api.types.is_numeric_dtype(out[c]):
-                out[c] = out[c].apply(lambda x: (f"{x:.3f}" if pd.notna(x) else "")).str.replace("0.", ".", regex=False)
+                out[c] = out[c].apply(lambda x: f".{str(x).split('.')[1][:3]}" if pd.notna(x) and x < 1 else f"{x:.3f}" if pd.notna(x) else "")
 
-    # Bold the Totals row if present
+    for c in out.columns:
+        if c not in pct_cols and pd.api.types.is_numeric_dtype(out[c]):
+            out[c] = out[c].apply(lambda x: f"{x:.3f}".rstrip("0").rstrip(".") if pd.notna(x) else "")
+
+    # Bold totals
     if "Last" in out.columns:
-        def _bold_totals_row(row):
-            is_tot = str(row.get("Last","")).strip().lower() == "totals"
-            return ["font-weight: bold" if is_tot else "" for _ in row]
-        out = out.style.apply(_bold_totals_row, axis=1)
+        def _bold(row):
+            return ["font-weight: bold" if str(row.get("Last","")).lower() in ["totals","total"] else "" for _ in row]
+        out = out.style.apply(_bold, axis=1)
 
-    column_config = {}
-    return out, column_config
+    return out, {}
 
-# Data loading: cumulative -> read one file and let the prep funcs select columns
+
 
 def load_cumulative():
     import glob
