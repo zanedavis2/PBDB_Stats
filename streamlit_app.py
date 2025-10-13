@@ -943,32 +943,37 @@ def _apply_display_formatting(df, tab_name):
 # Data loading: cumulative -> read one file and let the prep funcs select columns
 
 def load_cumulative():
-    # Try exact file, then fallback to any *cumulative*.csv (case-insensitive)
+    possible_paths = [
+        "cumulative.csv",
+        "/mnt/data/cumulative.csv",
+    ]
+    # Add any file with 'cumulative' in name
+    possible_paths += [
+        p for p in glob.glob("*.csv") + glob.glob("/mnt/data/*.csv")
+        if "cumulative" in os.path.basename(p).lower()
+    ]
+
     df_all = None
-    candidates = [CUMULATIVE_FILE]
-    # Add common alt casings
-    candidates += list({
-        p for p in glob.glob("*.csv") if "cumulative" in os.path.basename(p).lower()
-    })
-    for path in candidates:
+    for path in possible_paths:
         try:
-            df_all = pd.read_csv(path)
-            break
-        except Exception:
-            continue
+            if os.path.exists(path):
+                df_all = pd.read_csv(path)
+                st.success(f"Loaded cumulative file: {os.path.basename(path)}")
+                break
+        except Exception as e:
+            st.warning(f"Failed reading {path}: {e}")
 
     if df_all is None or df_all.empty:
+        st.error("No valid cumulative CSV found.")
         return {s: pd.DataFrame() for s in STAT_TYPES_ALL}
 
     df_all = clean_df(df_all)
-
-    frames = {
+    return {
         "Hitting": prepare_batting_stats(df_all),
         "Pitching": prepare_pitching_stats(df_all),
         "Fielding": prepare_fielding_stats(df_all),
         "Catching": prepare_catching_stats(df_all),
     }
-    return frames
 
 # Data loading: series -> aggregate using existing funcs
 
