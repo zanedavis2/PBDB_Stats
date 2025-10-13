@@ -567,23 +567,28 @@ def _format_series(df, tab_name):
 
     pct_cols = [c for c in out.columns if isinstance(c, str) and c.endswith("%")]
 
-    # SERIES: scale ratios → percent
-    for c in pct_cols:
-        out[c] = pd.to_numeric(out[c], errors="coerce") * 100.0
-        out[c] = out[c].map(lambda x: f"{x:.2f}%" if pd.notna(x) else "")
 
     # Hitting decimals as .xxx with 3 places
     if tab_name == "Hitting":
         for c in [k for k in ["AVG","OBP","SLG","OPS","BABIP","BA/RISP","PS/PA"] if k in out.columns]:
             out[c] = out[c].map(_dot3)
+        for c in pct_cols:
+            out[c] = pd.to_numeric(out[c], errors="coerce") * 100.0
+            out[c] = out[c].map(lambda x: f"{x:.2f}%" if pd.notna(x) else "")
 
     # Pitching specifics
     if tab_name == "Pitching":
         if "ERA" in out.columns:
             out["ERA"] = out["ERA"].map(lambda x: f"{float(x):.2f}" if pd.notna(x) else "")
+        if "IP" in out.columns:
+            out["IP"] = out["IP"].map(lambda x: f"{float(x):.2f}" if pd.notna(x) else "")
         for c in [k for k in ["R","K-L"] if k in out.columns]:
             out[c] = pd.to_numeric(out[c], errors="coerce").fillna(0).astype("Int64").astype(str).replace("<NA>", "")
+         for c in pct_cols:
+            #out[c] = pd.to_numeric(out[c], errors="coerce") * 100.0
+            out[c] = out[c].map(lambda x: f"{x:.2f}%" if pd.notna(x) else "")
 
+    
     # Int-like columns per tab (display as ints)
     int_like_by_tab = {
         "Hitting":  ["PA","AB","H","R","RBI","BB","SO","2B","3B","HR","SB","QAB","XBH","TB","2OUTRBI","H_RISP","AB_RISP","HHB"],
