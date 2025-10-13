@@ -565,6 +565,16 @@ def _format_series(df, tab_name):
             return "-." + s[3:]
         return s
 
+    def _dot2(x):
+        if pd.isna(x):
+            return ""
+        s = f"{float(x):.2f}"
+        if s.startswith("0."):
+            return "." + s[2:]
+        if s.startswith("-0."):
+            return "-." + s[3:]
+        return s
+
     pct_cols = [c for c in out.columns if isinstance(c, str) and c.endswith("%")]
 
 
@@ -578,15 +588,18 @@ def _format_series(df, tab_name):
 
     # Pitching specifics
     if tab_name == "Pitching":
-        if "ERA" in out.columns:
-            out["ERA"] = out["ERA"].map(lambda x: f"{float(x):.2f}" if pd.notna(x) else "")
-        if "IP" in out.columns:
-            out["IP"] = out["IP"].map(lambda x: f"{float(x):.2f}" if pd.notna(x) else "")
-        if "WHIP" in out.columns:
-            out["WHIP"] = out["WHIP"].map(lambda x: f"{float(x):.2f}" if pd.notna(x) else "")
-        if "BB/INN" in out.columns:
-            out["BB/INN"] = out["BB/INN"].map(lambda x: f"{float(x):.2f}" if pd.notna(x) else "")
-
+        for c in [k for k in ["ERA","IP","WHIP","BB/INN"] if k in out.columns]:
+            out[c] = out[c].map(_dot2)
+        #if "ERA" in out.columns:
+            #out["ERA"] = out["ERA"].map(lambda x: f"{float(x):.2f}" if pd.notna(x) else "")
+        #if "IP" in out.columns:
+            #out["IP"] = out["IP"].map(lambda x: f"{float(x):.2f}" if pd.notna(x) else "")
+        #if "WHIP" in out.columns:
+            #out["WHIP"] = out["WHIP"].map(lambda x: f"{float(x):.2f}" if pd.notna(x) else "")
+        #if "BB/INN" in out.columns:
+            #out["BB/INN"] = out["BB/INN"].map(lambda x: f"{float(x):.2f}" if pd.notna(x) else "")
+        for c in [k for k in ["BA/RISP"] if k in out.columns]:
+            out[c] = out[c].map(_dot3)
         
         for c in [k for k in ["R","K-L"] if k in out.columns]:
             out[c] = pd.to_numeric(out[c], errors="coerce").fillna(0).astype("Int64").astype(str).replace("<NA>", "")
