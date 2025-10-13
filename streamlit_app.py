@@ -413,33 +413,9 @@ def aggregate_stats_hitting(csv_files):
 
 def generate_aggregated_hitting_df(df):
     cols_to_keep = [
-        "Last",
-        "First",
-        "PA",
-        "AB",
-        "H",
-        "BB",
-        "HBP",
-        "SF",
-        "TB",
-        "R",
-        "RBI",
-        "SO",
-        "2B",
-        "3B",
-        "HR",
-        "SB",
-        "CS",
-        "QAB",
-        "HHB",
-        "LD",
-        "FB",
-        "GB",
-        "H_RISP",
-        "AB_RISP",
-        "PS",
-        "2OUTRBI",
-        "XBH",
+        "Last", "First", "PA", "AB", "H", "BB", "HBP", "SF", "TB", "R", "RBI", "SO",
+        "2B", "3B", "HR", "SB", "CS", "QAB", "HHB", "LD", "FB", "GB",
+        "H_RISP", "AB_RISP", "PS", "2OUTRBI", "XBH",
     ]
 
     for col in cols_to_keep:
@@ -453,11 +429,12 @@ def generate_aggregated_hitting_df(df):
 
     agg_df = df.groupby(["Last", "First"], as_index=False).sum()
 
-    # Derived
+    # === Derived statistics ===
     agg_df["AVG"] = np.where(agg_df["AB"] > 0, agg_df["H"] / agg_df["AB"], 0)
     agg_df["OBP"] = np.where(
         (agg_df["AB"] + agg_df["BB"] + agg_df["HBP"] + agg_df["SF"]) > 0,
-        (agg_df["H"] + agg_df["BB"] + agg_df["HBP"]) / (agg_df["AB"] + agg_df["BB"] + agg_df["HBP"] + agg_df["SF"]),
+        (agg_df["H"] + agg_df["BB"] + agg_df["HBP"]) /
+        (agg_df["AB"] + agg_df["BB"] + agg_df["HBP"] + agg_df["SF"]),
         0,
     )
     agg_df["SLG"] = np.where(agg_df["AB"] > 0, agg_df["TB"] / agg_df["AB"], 0)
@@ -477,57 +454,18 @@ def generate_aggregated_hitting_df(df):
     agg_df["BA/RISP"] = np.where(agg_df["AB_RISP"] > 0, agg_df["H_RISP"] / agg_df["AB_RISP"], 0)
     agg_df["PS/PA"] = np.where(agg_df["PA"] > 0, agg_df["PS"] / agg_df["PA"], 0)
 
-    pct_cols = [
-        "AVG",
-        "OBP",
-        "SLG",
-        "OPS",
-        "QAB%",
-        "BB/K",
-        "C%",
-        "HHB%",
-        "LD%",
-        "FB%",
-        "GB%",
-        "BABIP",
-        "BA/RISP",
-        "PS/PA",
-    ]
+    # === Format percentages ===
+    pct_cols = ["AVG", "OBP", "SLG", "OPS", "QAB%", "BB/K", "C%", "HHB%", "LD%", "FB%", "GB%", "BABIP", "BA/RISP", "PS/PA"]
     agg_df[pct_cols] = agg_df[pct_cols].round(3)
 
+    # === Final columns for display ===
     final_cols = [
-        "Last",
-        "First",
-        "PA",
-        "AB",
-        "AVG",
-        "OBP",
-        "OPS",
-        "SLG",
-        "H",
-        "R",
-        "RBI",
-        "BB",
-        "2B",
-        "SB",
-        "QAB",
-        "QAB%",
-        "BB/K",
-        "C%",
-        "HHB",
-        "HHB%",
-        "LD%",
-        "FB%",
-        "GB%",
-        "BABIP",
-        "BA/RISP",
-        "2OUTRBI",
-        "XBH",
-        "TB",
-        "PS/PA",
-        "SO",
+        "Last", "First", "PA", "AB", "AVG", "OBP", "OPS", "SLG", "H", "R", "RBI", "BB",
+        "2B", "3B", "HR", "SB", "QAB", "QAB%", "BB/K", "C%", "HHB", "HHB%", "LD%", "FB%",
+        "GB%", "BABIP", "BA/RISP", "2OUTRBI", "XBH", "TB", "PS/PA", "SO",
     ]
     agg_df = agg_df[[c for c in final_cols if c in agg_df.columns]]
+
     return agg_df
 
 
