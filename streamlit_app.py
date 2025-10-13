@@ -584,9 +584,7 @@ def _format_series(df, tab_name):
             out["IP"] = out["IP"].map(lambda x: f"{float(x):.2f}" if pd.notna(x) else "")
         for c in [k for k in ["R","K-L"] if k in out.columns]:
             out[c] = pd.to_numeric(out[c], errors="coerce").fillna(0).astype("Int64").astype(str).replace("<NA>", "")
-        for c in pct_cols:
-            #out[c] = pd.to_numeric(out[c], errors="coerce") * 100.0
-            out[c] = out[c].map(lambda x: f"{x:.2f}%" if pd.notna(x) else "")
+        
 
     
     # Int-like columns per tab (display as ints)
