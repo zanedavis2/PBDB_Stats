@@ -646,138 +646,154 @@ def _drop_rows_nan_names(df):
 
 # Utility: append a totals row (sum numeric columns)
 def _append_totals(df, tab_name):
-    """Append or preserve a totals row, always pinned at the bottom."""
+    """Append or preserve a totals row, always pinned at the bottom.
+
+    Rules:
+      - If the incoming DF already has a Totals row, keep it and pin it to the bottom.
+      - Otherwise:
+          * Non-% numeric columns  -> SUM
+          * % columns (name endswith '%') -> MEAN
+      - For Hitting we still compute the "real" derived rates (AVG, OBP, SLG, OPS, BB/K, C%, BABIP, BA/RISP, PS/PA, HHB%).
+        Any other numeric column not explicitly set will follow the SUM/MEAN rule above.
+    """
     if df is None or df.empty:
         return df
 
     base = df.copy()
 
-    # 🧩 Skip if cumulative already includes a totals row
+    # If a totals row already exists in cumulative, just move it to the bottom.
     if "Last" in base.columns:
         lower_last = base["Last"].astype(str).str.strip().str.lower()
         if lower_last.isin(["totals", "total", ""]).any():
-            # Ensure that totals row is at the bottom
             base["_is_total"] = lower_last.isin(["totals", "total", ""])
-            base = (
-                pd.concat(
-                    [base[~base["_is_total"]], base[base["_is_total"]]],
-                    ignore_index=True
-                )
-                .drop(columns="_is_total")
-                .reset_index(drop=True)
-            )
+            base = (pd.concat([base[~base["_is_total"]], base[base["_is_total"]]], ignore_index=True)
+                    .drop(columns="_is_total")
+                    .reset_index(drop=True))
             return base
 
-    # ----------------------------------------------------------------------
-    # otherwise, calculate totals (used for aggregated series)
-    # ----------------------------------------------------------------------
-    totals = {c: 0.0 for c in base.columns}  # fill numeric with 0.0 by default
-    for c in base.columns:
-        if not pd.api.types.is_numeric_dtype(base[c]):
-            totals[c] = ""  # keep non-numeric blank
-
+    # Build a totals dict with blanks for non-numeric to preserve column order
+    totals = {c: "" for c in base.columns}
     totals["Last"], totals["First"] = "Totals", ""
 
-    def ssum(c):
-        if c not in base.columns:
-            return 0.0
-        col = pd.to_numeric(base[c], errors="coerce")
-        return float(col.fillna(0).sum())
+    # Safe helpers
+    def _as_num(s):
+        return pd.to_numeric(s, errors="coerce")
 
-    # -----------------------
-    # HITTING TOTALS
-    # -----------------------
+    def ssum(col):
+        return float(_as_num(base[col]).fillna(0).sum()) if col in base.columns else 0.0
+
+    def smean(col):
+        if col not in base.columns:
+            return 0.0
+        v = _as_num(base[col]).dropna()
+        return float(v.mean()) if len(v) else 0.0
+
+    # ---------- HITTING: compute true derived rates first ----------
     if tab_name == "Hitting":
+        # Sums for denominators/numerators used in true derived rates
         PA, AB, H = ssum("PA"), ssum("AB"), ssum("H")
         BB, HBP, SF = ssum("BB"), ssum("HBP"), ssum("SF")
         TB, R, RBI, SO = ssum("TB"), ssum("R"), ssum("RBI"), ssum("SO")
         HR, QAB, PS = ssum("HR"), ssum("QAB"), ssum("PS")
         AB_RISP, H_RISP = ssum("AB_RISP"), ssum("H_RISP")
 
-        totals.update({
-            "PA": PA, "AB": AB, "H": H, "BB": BB, "HBP": HBP, "SF": SF,
-            "TB": TB, "R": R, "RBI": RBI, "SO": SO, "HR": HR,
-            "QAB": QAB, "PS": PS,
-        })
+        # Raw-count columns you want summed explicitly
+        for raw_col in ["PA","AB","H","BB","HBP","SF","TB","R","RBI","SO","HR","QAB","PS","SB","XBH","2B","3B","H_RISP","AB_RISP"]:
+            if raw_col in base.columns:
+                totals[raw_col] = ssum(raw_col)
 
-        totals["AVG"] = round(H / AB, 3) if AB else 0
-        totals["OBP"] = round((H + BB + HBP) / (AB + BB + HBP + SF), 3) if (AB + BB + HBP + SF) else 0
-        totals["SLG"] = round(TB / AB, 3) if AB else 0
-        totals["OPS"] = round(totals["OBP"] + totals["SLG"], 3)
-        totals["QAB%"] = round(QAB / PA, 3) if PA else 0
-        totals["BB/K"] = round(BB / SO, 3) if SO else round(BB, 3)
-        totals["C%"] = round(1 - (SO / AB), 3) if AB else 0
+        # True derived rates
+        totals["AVG"]   = round(H / AB, 3) if AB else 0
+        totals["OBP"]   = round((H + BB + HBP) / (AB + BB + HBP + SF), 3) if (AB + BB + HBP + SF) else 0
+        totals["SLG"]   = round(TB / AB, 3) if AB else 0
+        totals["OPS"]   = round(totals["OBP"] + totals["SLG"], 3)
+        totals["QAB%"]  = round(QAB / PA, 3) if PA else 0
+        totals["BB/K"]  = round(BB / SO, 3) if SO else round(BB, 3)
+        totals["C%"]    = round(1 - (SO / AB), 3) if AB else 0
         totals["BABIP"] = round((H - HR) / (AB - SO - HR + SF), 3) if (AB - SO - HR + SF) else 0
         totals["BA/RISP"] = round(H_RISP / AB_RISP, 3) if AB_RISP else 0
         totals["PS/PA"] = round(PS / PA, 3) if PA else 0
 
         if "HHB" in base.columns:
-            totals["HHB"] = ssum("HHB")
-            totals["HHB%"] = round(totals["HHB"] / AB, 3) if AB else 0
+            totals["HHB"]  = ssum("HHB")
+            totals["HHB%"] = round((totals["HHB"] / AB), 3) if AB else 0
 
-    # -----------------------
-    # PITCHING TOTALS (FIXED)
-    # -----------------------
-    elif tab_name == "Pitching":
-        IP, ER, H, BB, HR, SO = ssum("IP"), ssum("ER"), ssum("H"), ssum("BB"), ssum("HR"), ssum("SO")
-        BF, HBP, SB, CS = ssum("BF"), ssum("HBP"), ssum("SB"), ssum("CS")
-
-        totals.update({
-            "IP": round(IP, 2), "ER": ER, "H": H, "BB": BB,
-            "HR": HR, "SO": SO, "BF": BF, "HBP": HBP, "SB": SB, "CS": CS,
-        })
-
-        # Derived metrics
-        totals["ERA"] = round((ER * 9 / IP), 2) if IP else 0
-        totals["WHIP"] = round((BB + H) / IP, 2) if IP else 0
-        totals["BB/INN"] = round(BB / IP, 2) if IP else 0
-        totals["FIP"] = round(((13 * HR + 3 * BB - 2 * SO) / IP) + 3.1, 2) if IP else 0
-        totals["SB%"] = round(SB / (SB + CS) * 100, 1) if (SB + CS) else 0
-        totals["BAA"] = round(H / (BF - BB - HBP), 3) if (BF - BB - HBP) > 0 else 0
-        totals["BABIP"] = round((H - HR) / (BF - SO - HR - BB - HBP), 3) if (BF - SO - HR - BB - HBP) > 0 else 0
-        totals["BA/RISP"] = 0.000  # leave blank if not available
-
-        # Fill missing numeric columns with 0 to avoid gaps
+        # For percent columns present that we didn't explicitly set above (e.g., LD%, FB%, GB%)
         for c in base.columns:
-            if pd.api.types.is_numeric_dtype(base[c]) and c not in totals:
-                totals[c] = 0.0
+            if isinstance(c, str) and c.endswith("%") and c not in totals:
+                totals[c] = round(smean(c), 3)
 
-    # -----------------------
-    # FIELDING TOTALS
-    # -----------------------
+        # For any other numeric columns not set yet (e.g., XBH if present, etc.) -> SUM
+        for c in base.columns:
+            if c in ["Last","First"] or c in totals:
+                continue
+            if pd.api.types.is_numeric_dtype(base[c]):
+                totals[c] = ssum(c)
+
+    # ---------- PITCHING ----------
+    elif tab_name == "Pitching":
+        # Sum the raw counting stats we use for derived %/rates
+        for raw in ["IP","ER","H","BB","HR","SO","BF","HBP","SB","CS","#P"]:
+            if raw in base.columns:
+                totals[raw] = ssum(raw)
+
+        IP, ER, Hh, BBh, HRh, SOh = totals.get("IP",0), totals.get("ER",0), totals.get("H",0), totals.get("BB",0), totals.get("HR",0), totals.get("SO",0)
+        BF, HBP, SB, CS, NP = totals.get("BF",0), totals.get("HBP",0), totals.get("SB",0), totals.get("CS",0), totals.get("#P",0)
+
+        # Derived pitching rates
+        totals["ERA"]    = round((ER * 9 / IP), 2) if IP else 0
+        totals["WHIP"]   = round((BBh + Hh) / IP, 2) if IP else 0
+        totals["BB/INN"] = round(BBh / IP, 2) if IP else 0
+        totals["FIP"]    = round(((13 * HRh + 3 * BBh - 2 * SOh) / IP) + 3.1, 2) if IP else 0
+        totals["SB%"]    = round((SB / (SB + CS) * 100), 2) if (SB + CS) else 0
+        totals["BAA"]    = round(Hh / (BF - BBh - HBP), 3) if (BF - BBh - HBP) > 0 else 0
+        totals["BABIP"]  = round((Hh - HRh) / (BF - SOh - HRh - BBh - HBP), 3) if (BF - SOh - HRh - BBh - HBP) > 0 else 0
+
+        # For % columns -> MEAN, for any other numeric not set -> SUM
+        for c in base.columns:
+            if c in ["Last","First"] or c in totals:
+                continue
+            if isinstance(c, str) and c.endswith("%"):
+                totals[c] = round(smean(c), 2)
+            elif pd.api.types.is_numeric_dtype(base[c]):
+                totals[c] = ssum(c)
+
+    # ---------- FIELDING / CATCHING (simple) ----------
     elif tab_name == "Fielding":
-        TC, A, PO, E, DP = ssum("TC"), ssum("A"), ssum("PO"), ssum("E"), ssum("DP")
-        totals.update({"TC": TC, "A": A, "PO": PO, "E": E, "DP": DP})
-        totals["FPCT"] = round((A + PO) / TC, 3) if TC else 0
+        for raw in ["TC","A","PO","E","DP"]:
+            if raw in base.columns:
+                totals[raw] = ssum(raw)
+        TC = totals.get("TC",0); A = totals.get("A",0); PO = totals.get("PO",0)
+        totals["FPCT"] = round(((A + PO) / TC), 3) if TC else 0
 
-    # -----------------------
-    # CATCHING TOTALS
-    # -----------------------
     elif tab_name == "Catching":
-        INN, PB, CS = ssum("INN"), ssum("PB"), ssum("CS")
-        totals.update({"INN": INN, "PB": PB, "CS": CS})
-
+        for raw in ["INN","PB","CS"]:
+            if raw in base.columns:
+                totals[raw] = ssum(raw)
         if "SB-ATT" in base.columns:
             split = base["SB-ATT"].astype(str).str.split("-", expand=True)
             sb_sum = pd.to_numeric(split[0], errors="coerce").fillna(0).sum()
             att_sum = pd.to_numeric(split[1], errors="coerce").fillna(0).sum()
             totals["SB-ATT"] = f"{int(sb_sum)}-{int(att_sum)}"
-            totals["CS%"] = round(CS / att_sum * 100, 1) if att_sum else 0
+            totals["CS%"] = round((totals.get("CS",0) / att_sum * 100), 1) if att_sum else 0
 
-    # ----------------------------------------------------------------------
-    # Combine + Pin totals row to bottom
-    # ----------------------------------------------------------------------
-    totals_df = pd.DataFrame([totals]).reindex(columns=base.columns, fill_value=0.0)
+    # Fill any remaining numeric gaps by rule: % -> mean, else -> sum
+    for c in base.columns:
+        if c in totals or c in ["Last","First"]:
+            continue
+        if isinstance(c, str) and c.endswith("%"):
+            totals[c] = round(smean(c), 3)
+        elif pd.api.types.is_numeric_dtype(base[c]):
+            totals[c] = ssum(c)
+        else:
+            totals[c] = ""
 
-    # Remove any previous Totals rows
+    # Build DF + pin at bottom (dedupe any pre-existing totals just in case)
+    totals_df = pd.DataFrame([totals]).reindex(columns=base.columns)
     if "Last" in base.columns:
-        lower_last = base["Last"].astype(str).str.strip().str.lower()
-        base = base[~lower_last.isin(["totals", "total"])]
-
-    # Append new totals at bottom
+        mask = base["Last"].astype(str).str.strip().str.lower().isin(["totals","total"])
+        base = base[~mask]
     return pd.concat([base, totals_df], ignore_index=True)
-
-
 
 # Utility: filter selected players (by Last)
 def filter_players(df, selected_lastnames):
@@ -817,25 +833,34 @@ def _apply_display_formatting(df, tab_name):
     internal_cols = [c for c in out.columns if isinstance(c, str) and c.startswith('_')]
     out = out[[c for c in out.columns if c not in internal_cols]]
 
-    # ✅ Format all columns ending in "%" consistently
+    # --- Strict percent formatting: ALWAYS x100 for columns that end with '%' ---
     pct_cols = [c for c in out.columns if isinstance(c, str) and c.strip().endswith('%')]
     for c in pct_cols:
-        out[c] = pd.to_numeric(out[c], errors="coerce").apply(
-            lambda x: f"{x:.2f}%" if pd.notna(x) else ""
-        )
+        # make numeric, multiply by 100, format 2 decimals + %
+        vals = pd.to_numeric(out[c], errors="coerce")
+        out[c] = (vals * 100).map(lambda x: f"{x:.2f}%" if pd.notna(x) else "")
 
-    # ✅ Format hitting-style rate columns (.xxx format)
-    if tab_name == "Hitting":
+    # Non-percent rate formatting
+    if tab_name == "Pitching":
+        # Show two decimals for all remaining numeric, except those already stringified above
+        for c in out.columns:
+            if c in pct_cols:
+                continue
+            if pd.api.types.is_numeric_dtype(out[c]):
+                out[c] = out[c].apply(lambda x: f"{x:.2f}" if pd.notna(x) else "")
+    else:
+        # Hitting: show .xxx style for key rate-like columns that are NOT '%' columns
         non_pct_rate_cols = [c for c in RATE_COLS.get(tab_name, []) if c in out.columns and not c.strip().endswith('%')]
         for c in non_pct_rate_cols:
             if pd.api.types.is_numeric_dtype(out[c]):
-                out[c] = out[c].apply(lambda x: f".{int(round(x*1000)):03d}" if pd.notna(x) and x > 0 else "")
+                out[c] = out[c].apply(lambda x: (f"{x:.3f}" if pd.notna(x) else "")).str.replace("0.", ".", regex=False)
 
-    # ✅ Format pitching numeric columns (2 decimals)
-    elif tab_name == "Pitching":
-        for c in out.columns:
-            if isinstance(c, str) and not c.endswith('%') and pd.api.types.is_numeric_dtype(out[c]):
-                out[c] = out[c].apply(lambda x: f"{x:.2f}" if pd.notna(x) else "")
+    # Bold the Totals row if present
+    if "Last" in out.columns:
+        def _bold_totals_row(row):
+            is_tot = str(row.get("Last","")).strip().lower() == "totals"
+            return ["font-weight: bold" if is_tot else "" for _ in row]
+        out = out.style.apply(_bold_totals_row, axis=1)
 
     column_config = {}
     return out, column_config
