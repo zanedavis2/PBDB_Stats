@@ -665,6 +665,7 @@ def _drop_rows_nan_names(df):
 
 # Utility: append a totals row (sum numeric columns)
 def _append_totals(df, tab_name):
+    """Append or preserve a totals row, always pinned at the bottom."""
     if df is None or df.empty:
         return df
 
@@ -674,9 +675,21 @@ def _append_totals(df, tab_name):
     if "Last" in base.columns:
         lower_last = base["Last"].astype(str).str.strip().str.lower()
         if lower_last.isin(["totals", "total", ""]).any():
-            # Just return df as-is (the totals row is already present)
-            return base.reset_index(drop=True)
-            
+            # Ensure that totals row is moved to the bottom if present
+            base["_is_total"] = lower_last.isin(["totals", "total", ""])
+            base = (
+                pd.concat(
+                    [base[~base["_is_total"]], base[base["_is_total"]]],
+                    ignore_index=True
+                )
+                .drop(columns="_is_total")
+                .reset_index(drop=True)
+            )
+            return base
+
+    # ----------------------------------------------------------------------
+    # otherwise, calculate totals (used for aggregated series)
+    # ----------------------------------------------------------------------
     totals = {c: "" for c in base.columns}
     totals["Last"], totals["First"] = "Totals", ""
 
@@ -699,7 +712,6 @@ def _append_totals(df, tab_name):
             "QAB": QAB, "PS": PS,
         })
 
-        # Derived cumulative metrics
         totals["AVG"] = round(H / AB, 3) if AB else 0
         totals["OBP"] = round((H + BB + HBP) / (AB + BB + HBP + SF), 3) if (AB + BB + HBP + SF) else 0
         totals["SLG"] = round(TB / AB, 3) if AB else 0
@@ -757,16 +769,19 @@ def _append_totals(df, tab_name):
             totals["SB-ATT"] = f"{int(sb_sum)}-{int(att_sum)}"
             totals["CS%"] = round(CS / att_sum * 100, 1) if att_sum else 0
 
+    # ----------------------------------------------------------------------
+    # Combine + Pin totals row to bottom
+    # ----------------------------------------------------------------------
     totals_df = pd.DataFrame([totals]).reindex(columns=base.columns, fill_value="")
+
+    # Remove any previous Totals to avoid duplication
     if "Last" in base.columns:
         lower_last = base["Last"].astype(str).str.strip().str.lower()
-        base["_is_total"] = lower_last.isin(["totals", "total"])
-        base = pd.concat([
-            base[~base["_is_total"]],
-            base[base["_is_total"]]
-        ]).drop(columns="_is_total").reset_index(drop=True)
+        base = base[~lower_last.isin(["totals", "total"])]
 
+    # Append the new totals at the very bottom
     return pd.concat([base, totals_df], ignore_index=True)
+
 
 # Utility: filter selected players (by Last)
 def filter_players(df, selected_lastnames):
