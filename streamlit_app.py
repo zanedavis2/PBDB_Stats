@@ -656,7 +656,7 @@ def _append_totals(df, tab_name):
     if "Last" in base.columns:
         lower_last = base["Last"].astype(str).str.strip().str.lower()
         if lower_last.isin(["totals", "total", ""]).any():
-            # Ensure that totals row is moved to the bottom if present
+            # Ensure that totals row is at the bottom
             base["_is_total"] = lower_last.isin(["totals", "total", ""])
             base = (
                 pd.concat(
@@ -671,11 +671,14 @@ def _append_totals(df, tab_name):
     # ----------------------------------------------------------------------
     # otherwise, calculate totals (used for aggregated series)
     # ----------------------------------------------------------------------
-    totals = {c: "" for c in base.columns}
+    totals = {c: 0.0 for c in base.columns}  # fill numeric with 0.0 by default
+    for c in base.columns:
+        if not pd.api.types.is_numeric_dtype(base[c]):
+            totals[c] = ""  # keep non-numeric blank
+
     totals["Last"], totals["First"] = "Totals", ""
 
     def ssum(c):
-        """Safely sum a numeric column, returns 0 if missing."""
         if c not in base.columns:
             return 0.0
         col = pd.to_numeric(base[c], errors="coerce")
@@ -713,7 +716,7 @@ def _append_totals(df, tab_name):
             totals["HHB%"] = round(totals["HHB"] / AB, 3) if AB else 0
 
     # -----------------------
-    # PITCHING TOTALS
+    # PITCHING TOTALS (FIXED)
     # -----------------------
     elif tab_name == "Pitching":
         IP, ER, H, BB, HR, SO = ssum("IP"), ssum("ER"), ssum("H"), ssum("BB"), ssum("HR"), ssum("SO")
@@ -724,6 +727,7 @@ def _append_totals(df, tab_name):
             "HR": HR, "SO": SO, "BF": BF, "HBP": HBP, "SB": SB, "CS": CS,
         })
 
+        # Derived metrics
         totals["ERA"] = round((ER * 9 / IP), 2) if IP else 0
         totals["WHIP"] = round((BB + H) / IP, 2) if IP else 0
         totals["BB/INN"] = round(BB / IP, 2) if IP else 0
@@ -731,6 +735,12 @@ def _append_totals(df, tab_name):
         totals["SB%"] = round(SB / (SB + CS) * 100, 1) if (SB + CS) else 0
         totals["BAA"] = round(H / (BF - BB - HBP), 3) if (BF - BB - HBP) > 0 else 0
         totals["BABIP"] = round((H - HR) / (BF - SO - HR - BB - HBP), 3) if (BF - SO - HR - BB - HBP) > 0 else 0
+        totals["BA/RISP"] = 0.000  # leave blank if not available
+
+        # Fill missing numeric columns with 0 to avoid gaps
+        for c in base.columns:
+            if pd.api.types.is_numeric_dtype(base[c]) and c not in totals:
+                totals[c] = 0.0
 
     # -----------------------
     # FIELDING TOTALS
@@ -757,15 +767,16 @@ def _append_totals(df, tab_name):
     # ----------------------------------------------------------------------
     # Combine + Pin totals row to bottom
     # ----------------------------------------------------------------------
-    totals_df = pd.DataFrame([totals]).reindex(columns=base.columns, fill_value="")
+    totals_df = pd.DataFrame([totals]).reindex(columns=base.columns, fill_value=0.0)
 
-    # Remove any previous Totals to avoid duplication
+    # Remove any previous Totals rows
     if "Last" in base.columns:
         lower_last = base["Last"].astype(str).str.strip().str.lower()
         base = base[~lower_last.isin(["totals", "total"])]
 
-    # Append the new totals at the very bottom
+    # Append new totals at bottom
     return pd.concat([base, totals_df], ignore_index=True)
+
 
 
 # Utility: filter selected players (by Last)
