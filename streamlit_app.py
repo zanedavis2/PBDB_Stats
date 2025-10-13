@@ -669,6 +669,12 @@ def _format_cumulative(df, tab_name):
     if tab_name == "Pitching":
         if "ERA" in out.columns:
             out["ERA"] = out["ERA"].map(lambda x: f"{float(x):.2f}" if pd.notna(x) else "")
+        if "IP" in out.columns:
+            out["IP"] = out["ERA"].map(lambda x: f"{float(x):.2f}" if pd.notna(x) else "")
+        if "WHIP" in out.columns:
+            out["WHIP"] = out["WHIP"].map(lambda x: f"{float(x):.2f}" if pd.notna(x) else "")
+        if "BB/INN" in out.columns:
+            out["BB/INN"] = out["BB/INN"].map(lambda x: f"{float(x):.2f}" if pd.notna(x) else "")
         for c in [k for k in ["R","K-L"] if k in out.columns]:
             out[c] = pd.to_numeric(out[c], errors="coerce").fillna(0).astype("Int64").astype(str).replace("<NA>", "")
 
