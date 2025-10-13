@@ -881,11 +881,15 @@ def _apply_display_formatting(df, tab_name):
 # Data loading: cumulative -> read one file and let the prep funcs select columns
 
 def load_cumulative():
+    import glob
+    import os
+    import pandas as pd
+    import streamlit as st
+
     possible_paths = [
         "cumulative.csv",
         "/mnt/data/cumulative.csv",
     ]
-    # Include any CSV that has 'cumulative' in the name (case-insensitive)
     possible_paths += [
         p for p in glob.glob("*.csv") + glob.glob("/mnt/data/*.csv")
         if "cumulative" in os.path.basename(p).lower()
@@ -895,9 +899,8 @@ def load_cumulative():
     for path in possible_paths:
         try:
             if os.path.exists(path):
-                # ✅ Read with header=1 to skip the "Batting" row
-                df_all = pd.read_csv(path, header=1)
-                #st.success(f"Loaded cumulative file: {os.path.basename(path)}")
+                df_all = pd.read_csv(path, header=1, dtype=str)  # ✅ read as strings safely
+                st.success(f"Loaded cumulative file: {os.path.basename(path)}")
                 break
         except Exception as e:
             st.warning(f"Failed reading {path}: {e}")
@@ -906,9 +909,16 @@ def load_cumulative():
         st.error("No valid cumulative CSV found.")
         return {s: pd.DataFrame() for s in STAT_TYPES_ALL}
 
-    # Clean and prepare the four stat sections
+    # ========= CLEANING FIX =========
+    df_all = df_all.applymap(lambda x: x.strip().replace('"', '') if isinstance(x, str) else x)
+    df_all = df_all.replace({"-": np.nan, "": np.nan, "N/A": np.nan})
+    for col in df_all.columns:
+        # convert everything that looks numeric
+        df_all[col] = pd.to_numeric(df_all[col], errors="ignore")
+
     df_all = clean_df(df_all)
 
+    # ========= PREPARATION =========
     frames = {
         "Hitting": prepare_batting_stats(df_all),
         "Pitching": prepare_pitching_stats(df_all),
@@ -916,10 +926,8 @@ def load_cumulative():
         "Catching": prepare_catching_stats(df_all),
     }
 
-    # Debugging info (optional)
-    #st.write("✅ Columns detected:", list(df_all.columns)[:20])
-    #st.write("✅ Rows detected:", len(df_all))
-
+    st.write("✅ Columns detected:", list(df_all.columns)[:20])
+    st.write("✅ Rows detected:", len(df_all))
     return frames
 
 def load_series(stat_types, selected_series):
