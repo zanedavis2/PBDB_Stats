@@ -694,7 +694,11 @@ def _append_totals(df, tab_name):
     totals["Last"], totals["First"] = "Totals", ""
 
     def ssum(c):
-        return pd.to_numeric(base.get(c, 0), errors="coerce").fillna(0).sum()
+        """Safely sum a numeric column, returns 0 if missing."""
+        if c not in base.columns:
+            return 0.0
+        col = pd.to_numeric(base[c], errors="coerce")
+        return float(col.fillna(0).sum())
 
     # -----------------------
     # HITTING TOTALS
