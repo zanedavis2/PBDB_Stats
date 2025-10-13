@@ -665,11 +665,18 @@ def _drop_rows_nan_names(df):
 
 # Utility: append a totals row (sum numeric columns)
 def _append_totals(df, tab_name):
-    """Append a single totals row for cumulative data with correct recalculated averages."""
     if df is None or df.empty:
         return df
 
     base = df.copy()
+
+    # 🧩 Skip if cumulative already includes a totals row
+    if "Last" in base.columns:
+        lower_last = base["Last"].astype(str).str.strip().str.lower()
+        if lower_last.isin(["totals", "total", ""]).any():
+            # Just return df as-is (the totals row is already present)
+            return base.reset_index(drop=True)
+            
     totals = {c: "" for c in base.columns}
     totals["Last"], totals["First"] = "Totals", ""
 
