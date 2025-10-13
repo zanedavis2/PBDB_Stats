@@ -590,16 +590,10 @@ def _format_series(df, tab_name):
     if tab_name == "Pitching":
         for c in [k for k in ["ERA","IP","WHIP","BB/INN"] if k in out.columns]:
             out[c] = out[c].map(_dot2)
-        #if "ERA" in out.columns:
-            #out["ERA"] = out["ERA"].map(lambda x: f"{float(x):.2f}" if pd.notna(x) else "")
-        #if "IP" in out.columns:
-            #out["IP"] = out["IP"].map(lambda x: f"{float(x):.2f}" if pd.notna(x) else "")
-        #if "WHIP" in out.columns:
-            #out["WHIP"] = out["WHIP"].map(lambda x: f"{float(x):.2f}" if pd.notna(x) else "")
-        #if "BB/INN" in out.columns:
-            #out["BB/INN"] = out["BB/INN"].map(lambda x: f"{float(x):.2f}" if pd.notna(x) else "")
-        for c in [k for k in ["BA/RISP"] if k in out.columns]:
-            out[c] = out[c].map(_dot3)
+        if "BA/RISP" in out.columns:
+            out["BA/RISP"] = pd.to_numeric(out["BA/RISP"], errors="coerce").map(
+                lambda v: _dot3(v) if pd.notna(v) else ""
+            )
         
         for c in [k for k in ["R","K-L"] if k in out.columns]:
             out[c] = pd.to_numeric(out[c], errors="coerce").fillna(0).astype("Int64").astype(str).replace("<NA>", "")
