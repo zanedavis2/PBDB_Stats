@@ -556,14 +556,38 @@ def _format_series(df, tab_name):
 
     # Helpers
     def _dot3(x):
-        if pd.isna(x):
-            return ""
-        s = f"{float(x):.3f}"
-        if s.startswith("0."):
-            return "." + s[2:]
-        if s.startswith("-0."):
-            return "-." + s[3:]
-        return s
+    # treat blanks/whitespace as missing
+    if x is None or (isinstance(x, str) and not x.strip()):
+        return ""
+    # try to parse tolerant of commas/percent signs
+    try:
+        v = float(str(x).replace(",", "").replace("%", ""))
+    except Exception:
+        return ""  # anything non-numeric becomes blank
+
+    s = f"{v:.3f}"
+    if 0 <= v < 1:     # 0.500 -> .500
+        s = "." + s[2:]
+    elif -1 < v < 0:   # -0.250 -> -.250
+        s = "-." + s[3:]
+    return s
+
+    def _dot2(x):
+    # treat blanks/whitespace as missing
+    if x is None or (isinstance(x, str) and not x.strip()):
+        return ""
+    # try to parse tolerant of commas/percent signs
+    try:
+        v = float(str(x).replace(",", "").replace("%", ""))
+    except Exception:
+        return ""  # anything non-numeric becomes blank
+
+    s = f"{v:.2f}"
+    if 0 <= v < 1:     # 0.500 -> .500
+        s = "." + s[2:]
+    elif -1 < v < 0:   # -0.250 -> -.250
+        s = "-." + s[3:]
+    return s
 
  
 
@@ -582,10 +606,9 @@ def _format_series(df, tab_name):
     if tab_name == "Pitching":
         for c in [k for k in ["ERA","IP","WHIP","BB/INN"] if k in out.columns]:
             out[c] = out[c].map(_dot2)
-        #if "BA/RISP" in out.columns:
-            #out["BA/RISP"] = pd.to_numeric(out["BA/RISP"], errors="coerce").map(
-                #lambda v: _dot3(v) if pd.notna(v) else ""
-           # )
+        if "BA/RISP" in out.columns:
+            out["BA/RISP"] = pd.to_numeric(out["BA/RISP"], errors="coerce").map(
+                lambda v: _dot3(v) if pd.notna(v) else "")
         
         for c in [k for k in ["R","K-L"] if k in out.columns]:
             out[c] = pd.to_numeric(out[c], errors="coerce").fillna(0).astype("Int64").astype(str).replace("<NA>", "")
