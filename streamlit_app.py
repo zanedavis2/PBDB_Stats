@@ -80,48 +80,28 @@ def prepare_batting_stats(df):
     return df
 
 
-def prepare_pitching_stats(df):
+def prepare_pitching_stats(df, from_cumulative=False):
+    """
+    Cleans and formats pitching stats for display.
+    If from_cumulative=True, performs slicing for raw cumulative.csv structure.
+    """
     df = df.copy()
-    df = df.iloc[:, [1, 2] + list(range(53, 148))]
-    df.columns = [c.replace(".1", "") for c in df.columns]
-    
+
+    # ✅ Only slice when reading from raw cumulative file
+    if from_cumulative:
+        df = df.iloc[:, [1, 2] + list(range(53, 148))]
+        df.columns = [c.replace(".1", "") for c in df.columns]
+
     columns_to_keep = [
-        "Last",
-        "First",
-        "IP",
-        "ERA",
-        "WHIP",
-        "H",
-        "R",
-        "ER",
-        "BB",
-        "BB/INN",
-        "SO",
-        "K-L",
-        "HR",
-        "S%",
-        "FPS%",
-        "FPSO%",
-        "FPSH%",
-        "SM%",
-        "<3%",
-        "LD%",
-        "FB%",
-        "GB%",
-        "HHB%",
-        "WEAK%",
-        "BBS",
-        "BAA",
-        "BABIP",
-        "BA/RISP",
-        "CS",
-        "SB",
-        "SB%",
-        "FIP",
+        "Last", "First", "IP", "ERA", "WHIP", "H", "R", "ER", "BB", "BB/INN",
+        "SO", "K-L", "HR", "S%", "FPS%", "FPSO%", "FPSH%", "SM%", "<3%",
+        "LD%", "FB%", "GB%", "HHB%", "WEAK%", "BBS", "BAA", "BABIP",
+        "BA/RISP", "CS", "SB", "SB%", "FIP"
     ]
     existing_columns = [col for col in columns_to_keep if col in df.columns]
     df = df[existing_columns].copy()
 
+    # Clean and round numeric values
     if "IP" in df.columns:
         df["IP"] = pd.to_numeric(df["IP"], errors="coerce")
         df = df[df["IP"] != 0].reset_index(drop=True)
@@ -131,10 +111,11 @@ def prepare_pitching_stats(df):
             if pd.api.types.is_numeric_dtype(df[col]):
                 df[col] = df[col].round(2)
 
+    # Sort alphabetically
     if "Last" in df.columns and "First" in df.columns:
         df = df.sort_values(by=["Last", "First"]).reset_index(drop=True)
-    return df
 
+    return df
 
 def prepare_fielding_stats(df):
     df = df.copy()
@@ -889,11 +870,11 @@ def load_cumulative():
 
     # ========= PREPARATION =========
     frames = {
-        "Hitting": prepare_batting_stats(df_all),
-        "Pitching": prepare_pitching_stats(df_all),
-        "Fielding": prepare_fielding_stats(df_all),
-        "Catching": prepare_catching_stats(df_all),
-    }
+    "Hitting": prepare_batting_stats(df_all),
+    "Pitching": prepare_pitching_stats(df_all, from_cumulative=True),  # ✅ added flag
+    "Fielding": prepare_fielding_stats(df_all),
+    "Catching": prepare_catching_stats(df_all),
+}
     return frames
 
 def load_series(stat_types, selected_series):
