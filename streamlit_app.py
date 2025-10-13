@@ -1,1032 +1,952 @@
+
 import os
-import io
 import glob
 import numpy as np
 import pandas as pd
 import streamlit as st
 
-"""
-This Streamlit app wraps the original PBDB stats functions in a single-file interface
-that lets you select series (e.g., ["wake", "jmu"]) or upload cumulative CSVs, and
-then displays filterable tables for Hitting, Pitching, Fielding, and Catching.
-
-The absolute majority of the logic is copied directly from your original file, with
-only light edits for small bugs and to fit Streamlit I/O.
-"""
-
-# =====================
-# Original helper funcs
-# =====================
-
-def clean_df(df):
-    if "Last" in df.columns and "First" in df.columns:
-        # Normalize to strings
-        df["Last"] = df["Last"].astype(str).str.strip()
-        df["First"] = df["First"].astype(str).str.strip()
-
-        # Treat any casing of 'nan'/'none' or blanks as missing
-        def _norm_missing(s):
-            s = s.astype(str).str.strip()
-            lower = s.str.lower()
-            s = s.mask(lower.isin(["", "nan", "none"]))
-            return s
-        df["Last"] = _norm_missing(df["Last"])
-        df["First"] = _norm_missing(df["First"])
-
-        # Drop totals/empty tail if present (both names missing)
-        totals_idx = df.index[df["Last"].isna() & df["First"].isna()]
-        if len(totals_idx) > 0:
-            first_total = totals_idx[0]
-            df = df.loc[: first_total - 1].reset_index(drop=True)
-    return df
-
-
-def prepare_batting_stats(df):
-    df = df.copy()
-    columns_to_keep = [
-        "Last",
-        "First",
-        "PA",
-        "AB",
-        "H",
-        "AVG",
-        "OBP",
-        "SLG",
-        "OPS",
-        "RBI",
-        "R",
-        "BB",
-        "SO",
-        "XBH",
-        "2B",
-        "3B",
-        "HR",
-        "TB",
-        "SB",
-        "PS/PA",
-        "BB/K",
-        "C%",
-        "QAB",
-        "QAB%",
-        "HHB",
-        "HHB %",
-        "LD%",
-        "FB%",
-        "GB%",
-        "BABIP",
-        "BA/RISP",
-        "2OUTRBI",
-    ]
-    existing_columns = [col for col in columns_to_keep if col in df.columns]
-    df = df[existing_columns].copy()
-
-    if "PA" in df.columns:
-        df["PA"] = pd.to_numeric(df["PA"], errors="coerce")
-        df = df[df["PA"] != 0].reset_index(drop=True)
-
-    if "Last" in df.columns and "First" in df.columns:
-        df = df.sort_values(by=["Last", "First"]).reset_index(drop=True)
-    return df
-
-
-def prepare_pitching_stats(df):
-    df = df.copy()
-    columns_to_keep = [
-        "Last",
-        "First",
-        "IP",
-        "ERA",
-        "WHIP",
-        "H",
-        "R",
-        "ER",
-        "BB",
-        "BB/INN",
-        "SO",
-        "K-L",
-        "HR",
-        "S%",
-        "FPS%",
-        "FPSO%",
-        "FPSH%",
-        "SM%",
-        "<3%",
-        "LD%",
-        "FB%",
-        "GB%",
-        "HHB%",
-        "WEAK%",
-        "BBS",
-        "BAA",
-        "BABIP",
-        "BA/RISP",
-        "CS",
-        "SB",
-        "SB%",
-        "FIP",
-    ]
-    existing_columns = [col for col in columns_to_keep if col in df.columns]
-    df = df[existing_columns].copy()
-
-    if "IP" in df.columns:
-        df["IP"] = pd.to_numeric(df["IP"], errors="coerce")
-        df = df[df["IP"] != 0].reset_index(drop=True)
-
-    for col in df.columns:
-        if col not in ["Last", "First", "BABIP", "BAA", "BA/RISP"]:
-            if pd.api.types.is_numeric_dtype(df[col]):
-                df[col] = df[col].round(2)
-
-    if "Last" in df.columns and "First" in df.columns:
-        df = df.sort_values(by=["Last", "First"]).reset_index(drop=True)
-    return df
-
-
-def prepare_fielding_stats(df):
-    df = df.copy()
-    columns_to_keep = ["Last", "First", "TC", "A", "PO", "FPCT", "E", "DP"]
-    existing_columns = [col for col in columns_to_keep if col in df.columns]
-    df = df[existing_columns].copy()
-
-    if "TC" in df.columns:
-        df["TC"] = pd.to_numeric(df["TC"], errors="coerce")
-        df = df[df["TC"] != 0].reset_index(drop=True)
-
-    if "Last" in df.columns and "First" in df.columns:
-        df = df.sort_values(by=["Last", "First"]).reset_index(drop=True)
-
-    for col in df.columns:
-        if col not in ["Last", "First", "FPCT"]:
-            if pd.api.types.is_numeric_dtype(df[col]):
-                df[col] = df[col].round(0)
-    return df
-
-
-def prepare_catching_stats(df):
-    df = df.copy()
-    columns_to_keep = ["Last", "First", "INN", "PB", "SB-ATT", "CS", "CS%"]
-    existing_columns = [col for col in columns_to_keep if col in df.columns]
-    df = df[existing_columns].copy()
-
-    if "INN" in df.columns:
-        df["INN"] = pd.to_numeric(df["INN"], errors="coerce")
-        df = df[df["INN"] != 0].reset_index(drop=True)
-    return df
-
-
-def filter_by_player(player_list, df):
-    if "Last" not in df.columns:
-        raise ValueError("DataFrame must contain a 'Last' column.")
-    return df[df["Last"].isin(player_list)].copy()
-
-
-# ============================
-# Aggregation (Pitching)
-# ============================
-
-def aggregate_stats_pitching(csv_files):
-    cols_to_keep = [
-        "IP",
-        "ER",
-        "H",
-        "BB",
-        "R",
-        "SO",
-        "K-L",
-        "HR",
-        "#P",
-        "BF",
-        "HBP",
-        "FPS%",
-        "FPSO%",
-        "FPSW%",
-        "FPSH%",
-        "S%",
-        "SM%",
-        "LD%",
-        "FB%",
-        "GB%",
-        "BABIP",
-        "BA/RISP",
-        "CS",
-        "SB",
-        "SB%",
-        "<3%",
-        "HHB%",
-        "WEAK%",
-        "BBS",
-    ]
-
-    dfs = []
-    for name in csv_files:
-        file = f"{name}.csv"
-        df = pd.read_csv(file, header=1)
-        df = df.iloc[:, [1, 2] + list(range(53, 148))]
-        df.columns = [c.replace(".1", "") for c in df.columns]
-
-        if "Last" not in df.columns:
-            df["Last"] = ""
-        if "First" not in df.columns:
-            df["First"] = ""
-
-        df = df[[c for c in cols_to_keep + ["Last", "First"] if c in df.columns]]
-
-        df["Last"] = df["Last"].astype(str).str.strip().str.title()
-        df["First"] = df["First"].astype(str).str.strip().str.title()
-
-        for col in df.columns:
-            if col not in ["Last", "First"]:
-                df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
-
-        # Convert innings format (e.g., 4.2 → 4 + 2/3)
-        def convert_innings(ip):
-            try:
-                whole = int(ip)
-                fraction = round((ip - whole) * 10)
-                if fraction == 1:
-                    return whole + 1 / 3
-                elif fraction == 2:
-                    return whole + 2 / 3
-                else:
-                    return float(ip)
-            except Exception:
-                return float("nan")
-
-        if "IP" in df.columns:
-            df["IP"] = df["IP"].apply(convert_innings)
-
-        # Percent → counts
-        df["Strikes"] = (df["S%"] * df["#P"] / 100).round(0).astype(int)
-        df["FirstPitchStrikes"] = (df["FPS%"] * df["BF"] / 100).round(0).astype(int)
-        df["FPSO"] = (df["FPSO%"] * df["BF"] / 100).round(0).astype(int)
-        df["FPSH"] = (df["FPSH%"] * df["BF"] / 100).round(0).astype(int)
-
-        total_batted_balls = df["BF"] - df["SO"] - df["BB"] - df["HBP"]
-        df["GroundBalls"] = (df["GB%"] * total_batted_balls / 100).round(0).astype(int)
-        df["FlyBalls"] = (df["FB%"] * total_batted_balls / 100).round(0).astype(int)
-        df["LineDrives"] = (df["LD%"] * total_batted_balls / 100).round(0).astype(int)
-        df["HardHitBalls"] = (df["HHB%"] * total_batted_balls / 100).round(0).astype(int)
-        df["WeakContact"] = (df["WEAK%"] * total_batted_balls / 100).round(0).astype(int)
-        df["Under3Pitches"] = (df["<3%"] * df["BF"] / 100).round(0).astype(int)
-        df["SwingMisses"] = (df["SM%"] * df["#P"] / 100).round(0).astype(int)
-
-        drop_cols = [c for c in df.columns if c.endswith("%")]
-        df.drop(columns=drop_cols, inplace=True, errors="ignore")
-        dfs.append(df)
-
-    combined = pd.concat(dfs, ignore_index=True)
-
-    agg_df = combined.groupby(["Last", "First"], as_index=False).sum(numeric_only=True)
-    for col in agg_df.columns:
-        if col not in ["Last", "First"]:
-            agg_df[col] = agg_df[col].fillna(0).round(3)
-    return agg_df
-
-
-def generate_aggregated_pitching_df(df):
-    """
-    Takes an aggregated integer pitching dataframe and computes derived metrics.
-    Also preserves internal count columns (prefixed with '_') so totals can be
-    recomputed correctly in the UI.
-    """
-    # Keep a superset so we have denominators for weighted totals
-    needed_counts = [
-        "IP", "ER", "H", "BB", "R", "SO", "K-L", "HR", "#P", "BF", "HBP",
-        "Strikes", "FirstPitchStrikes", "FPSO", "FPSH", "GroundBalls", "FlyBalls",
-        "LineDrives", "HardHitBalls", "WeakContact", "Under3Pitches", "SwingMisses",
-        "BBS", "CS", "SB"
-    ]
-
-    df = df.copy()
-    for c in needed_counts:
-        if c not in df.columns:
-            df[c] = 0
-
-    # Avoid /0
-    df["IP"] = df["IP"].replace(0, np.nan)
-    df["BF"] = df["BF"].replace(0, np.nan)
-    df["#P"] = df["#P"].replace(0, np.nan)
-
-    # Derived metrics
-    df["ERA"] = (df["ER"] * 9 / df["IP"]).round(2)
-    df["WHIP"] = ((df["BB"] + df["H"]) / df["IP"]).round(2)
-    df["BB/INN"] = (df["BB"] / df["IP"]).round(2)
-    df["FIP"] = (((13 * df["HR"]) + (3 * df["BB"]) - (2 * df["SO"])) / df["IP"] + 3.1).round(2)
-
-    df["S%"] = (df["Strikes"] / df["#P"] * 100).round(2)
-    df["FPS%"] = (df["FirstPitchStrikes"] / df["BF"] * 100).round(2)
-    df["FPSO%"] = (df["FPSO"] / df["BF"] * 100).round(2)
-    df["FPSH%"] = (df["FPSH"] / df["BF"] * 100).round(2)
-    bb_balls = df["BF"] - df["SO"] - df["BB"] - df["HBP"]
-    df["SM%"] = (df["SwingMisses"] / df["#P"] * 100).round(2)
-    df["LD%"] = (df["LineDrives"] / bb_balls * 100).round(2)
-    df["FB%"] = (df["FlyBalls"] / bb_balls * 100).round(2)
-    df["GB%"] = (df["GroundBalls"] / bb_balls * 100).round(2)
-    df["HHB%"] = (df["HardHitBalls"] / bb_balls * 100).round(2)
-    df["WEAK%"] = (df["WeakContact"] / bb_balls * 100).round(2)
-    df["<3%"] = (df["Under3Pitches"] / df["BF"] * 100).round(2)
-
-    df["SB%"] = np.where((df["SB"] + df["CS"]) > 0, (df["SB"] / (df["SB"] + df["CS"]) * 100).round(2), 0)
-    df["BAA"] = np.where((df["BF"] - df["BB"] - df["HBP"]) > 0, (df["H"] / (df["BF"] - df["BB"] - df["HBP"])) .round(3), 0)
-    df["BABIP"] = np.where((df["BF"] - df["SO"] - df["HR"] - df["BB"] - df["HBP"]) > 0, ((df["H"] - df["HR"]) / (df["BF"] - df["SO"] - df["HR"] - df["BB"] - df["HBP"])) .round(3), 0)
-
-    if "BA/RISP" not in df.columns:
-        df["BA/RISP"] = 0.000
-
-    # Preserve internal counts for totals (prefixed with '_')
-    internal_cols = {
-        "_IP": "IP", "_ER": "ER", "_H": "H", "_BB": "BB", "_HR": "HR", "_SO": "SO",
-        "_NP": "#P", "_BF": "BF", "_HBP": "HBP", "_STR": "Strikes", "_FPS": "FirstPitchStrikes",
-        "_FPSO": "FPSO", "_FPSH": "FPSH", "_GB": "GroundBalls", "_FB": "FlyBalls",
-        "_LD": "LineDrives", "_HHB": "HardHitBalls", "_WEAK": "WeakContact",
-        "_U3": "Under3Pitches", "_SM": "SwingMisses", "_BBS": "BBS", "_CS": "CS", "_SB": "SB"
-    }
-    for new, old in internal_cols.items():
-        df[new] = df[old].fillna(0)
-
-    # Final column order (display + internal at the end)
-    columns_to_keep = [
-        "Last", "First", "IP", "ERA", "WHIP", "SO", "K-L", "H", "R", "ER", "BB",
-        "BB/INN", "FIP", "S%", "FPS%", "FPSO%", "FPSH%", "BAA", "BBS", "SM%",
-        "LD%", "FB%", "GB%", "BABIP", "BA/RISP", "CS", "SB", "SB%", "<3%", "HHB%", "WEAK%"
-    ] + list(internal_cols.keys())
-
-    for col in columns_to_keep:
-        if col not in df.columns:
-            df[col] = 0
-
-    df = df[columns_to_keep].copy()
-    return df
-
-
-# ============================
-# Aggregation (Hitting)
-# ============================
-
-def aggregate_stats_hitting(csv_files):
-    import numpy as np
-    import pandas as pd
-
-    cols_to_keep = [
-        "Last","First","PA","AB","H","BB","HBP","SF","TB","R","RBI","SO","2B","3B","HR",
-        "SB","CS","QAB","HHB","LD%","FB%","GB%","H_RISP","AB_RISP","PS","2OUTRBI","XBH",
-    ]
-
-    def _pct_to_ratio(s):
-        s = pd.to_numeric(s, errors="coerce").fillna(0.0)
-        return np.where(s > 1.0, s / 100.0, s)
-
-    dfs = []
-    for name in csv_files:
-        file = f"{name}.csv"
-        df = pd.read_csv(file, header=1)
-        df = df[[c for c in cols_to_keep if c in df.columns]].copy()
-
-        # Clean names
-        df["Last"] = df["Last"].astype(str).str.strip().str.title()
-        df["First"] = df["First"].astype(str).str.strip().str.title()
-
-        # Convert all numeric columns
-        for col in df.columns:
-            if col not in ["Last", "First"]:
-                df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
-
-        # Convert % to ratio and compute LD/GB/FB counts = ratio * AB
-        ld_ratio = _pct_to_ratio(df.get("LD%", 0))
-        gb_ratio = _pct_to_ratio(df.get("GB%", 0))
-        fb_ratio = _pct_to_ratio(df.get("FB%", 0))
-
-        df["LD"] = np.rint(ld_ratio * df.get("AB", 0)).astype(int)
-        df["GB"] = np.rint(gb_ratio * df.get("AB", 0)).astype(int)
-        df["FB"] = np.rint(fb_ratio * df.get("AB", 0)).astype(int)
-
-        dfs.append(df)
-
-    combined = pd.concat(dfs, ignore_index=True)
-    agg_df = combined.groupby(["Last", "First"], as_index=False).sum(numeric_only=True)
-
-    for c in ["LD", "GB", "FB"]:
-        if c in agg_df.columns:
-            agg_df[c] = agg_df[c].astype(int)
-
-    return agg_df
-
-def generate_aggregated_hitting_df(df):
-    cols_to_keep = [
-        "Last",
-        "First",
-        "PA",
-        "AB",
-        "H",
-        "BB",
-        "HBP",
-        "SF",
-        "TB",
-        "R",
-        "RBI",
-        "SO",
-        "2B",
-        "3B",
-        "HR",
-        "SB",
-        "CS",
-        "QAB",
-        "HHB",
-        "LD",
-        "FB",
-        "GB",
-        "H_RISP",
-        "AB_RISP",
-        "PS",
-        "2OUTRBI",
-        "XBH",
-    ]
-
-    for col in cols_to_keep:
-        if col not in df.columns:
-            df[col] = 0
-    df = df[cols_to_keep].copy()
-
-    for col in df.columns:
-        if col not in ["Last", "First"]:
-            df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
-
-    agg_df = df.groupby(["Last", "First"], as_index=False).sum()
-
-    # Derived
-    agg_df["AVG"] = np.where(agg_df["AB"] > 0, agg_df["H"] / agg_df["AB"], 0)
-    agg_df["OBP"] = np.where(
-        (agg_df["AB"] + agg_df["BB"] + agg_df["HBP"] + agg_df["SF"]) > 0,
-        (agg_df["H"] + agg_df["BB"] + agg_df["HBP"]) / (agg_df["AB"] + agg_df["BB"] + agg_df["HBP"] + agg_df["SF"]),
-        0,
-    )
-    agg_df["SLG"] = np.where(agg_df["AB"] > 0, agg_df["TB"] / agg_df["AB"], 0)
-    agg_df["OPS"] = agg_df["OBP"] + agg_df["SLG"]
-    agg_df["QAB%"] = np.where(agg_df["PA"] > 0, agg_df["QAB"] / agg_df["PA"], 0)
-    agg_df["BB/K"] = np.where(agg_df["SO"] > 0, agg_df["BB"] / agg_df["SO"], agg_df["BB"])
-    agg_df["C%"] = np.where(agg_df["AB"] > 0, 1 - (agg_df["SO"] / agg_df["AB"]), 0)
-    agg_df["HHB%"] = np.where(agg_df["AB"] > 0, agg_df["HHB"] / agg_df["AB"], 0)
-
-    total_batted = agg_df["LD"] + agg_df["FB"] + agg_df["GB"]
-    agg_df["LD%"] = np.where(total_batted > 0, agg_df["LD"] / total_batted, 0)
-    agg_df["FB%"] = np.where(total_batted > 0, agg_df["FB"] / total_batted, 0)
-    agg_df["GB%"] = np.where(total_batted > 0, agg_df["GB"] / total_batted, 0)
-
-    denom = agg_df["AB"] - agg_df["SO"] - agg_df["HR"] + agg_df["SF"]
-    agg_df["BABIP"] = np.where(denom > 0, (agg_df["H"] - agg_df["HR"]) / denom, 0)
-    agg_df["BA/RISP"] = np.where(agg_df["AB_RISP"] > 0, agg_df["H_RISP"] / agg_df["AB_RISP"], 0)
-    agg_df["PS/PA"] = np.where(agg_df["PA"] > 0, agg_df["PS"] / agg_df["PA"], 0)
-
-    pct_cols = [
-        "AVG",
-        "OBP",
-        "SLG",
-        "OPS",
-        "QAB%",
-        "BB/K",
-        "C%",
-        "HHB%",
-        "LD%",
-        "FB%",
-        "GB%",
-        "BABIP",
-        "BA/RISP",
-        "PS/PA",
-    ]
-    agg_df[pct_cols] = agg_df[pct_cols].round(3)
-
-    final_cols = [
-        "Last",
-        "First",
-        "PA",
-        "AB",
-        "AVG",
-        "OBP",
-        "OPS",
-        "SLG",
-        "H",
-        "R",
-        "RBI",
-        "BB",
-        "2B",
-        "SB",
-        "QAB",
-        "QAB%",
-        "BB/K",
-        "C%",
-        "HHB",
-        "HHB%",
-        "LD%",
-        "FB%",
-        "GB%",
-        "BABIP",
-        "BA/RISP",
-        "2OUTRBI",
-        "XBH",
-        "TB",
-        "PS/PA",
-        "SO",
-    ]
-    agg_df = agg_df[[c for c in final_cols if c in agg_df.columns]]
-    return agg_df
-
-
-# ============================
-# Aggregation (Fielding)
-# ============================
-
-def aggregate_stats_fielding(csv_files):
-    cols_to_keep = ["TC", "A", "PO", "E", "DP"]
-    dfs = []
-    for name in csv_files:
-        file = f"{name}.csv"
-        try:
-            df = pd.read_csv(file, header=1)
-            df = df.iloc[:, [1, 2] + list(range(148, df.shape[1]))]
-            df.columns = [c.replace(".1", "") for c in df.columns]
-
-            if "Last" not in df.columns:
-                df["Last"] = ""
-            if "First" not in df.columns:
-                df["First"] = ""
-
-            df = df[[c for c in cols_to_keep + ["Last", "First"] if c in df.columns]]
-
-            df["Last"] = df["Last"].astype(str).str.strip().str.title()
-            df["First"] = df["First"].astype(str).str.strip().str.title()
-
-            for col in df.columns:
-                if col not in ["Last", "First"]:
-                    df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
-            dfs.append(df)
-        except FileNotFoundError:
-            continue
-        except Exception:
-            continue
-
-    if not dfs:
-        return pd.DataFrame(columns=cols_to_keep + ["Last", "First", "Plays Made"])
-
-    combined = pd.concat(dfs, ignore_index=True)
-    agg_df = combined.groupby(["Last", "First"], as_index=False).sum(numeric_only=True)
-
-    for col in agg_df.columns:
-        if col not in ["Last", "First"]:
-            agg_df[col] = agg_df[col].fillna(0).round(3)
-
-    agg_df["FPCT"] = ((agg_df["A"] + agg_df["PO"]) / agg_df["TC"]).round(3).fillna(0)
-    return agg_df
-
-
-# ============================
-# Aggregation (Catching)
-# ============================
-
-def aggregate_stats_catching(csv_files):
-    cols_to_keep = ["INN", "PB", "SB", "SB-ATT", "CS"]
-    dfs = []
-    for name in csv_files:
-        file = f"{name}.csv"
-        try:
-            df = pd.read_csv(file, header=1)
-            df = df.iloc[:, [1, 2] + list(range(148, df.shape[1]))]
-            df.columns = [c.replace(".1", "") for c in df.columns]
-            df.columns = [c.replace(".2", "") for c in df.columns]
-
-            if "Last" not in df.columns:
-                df["Last"] = ""
-            if "First" not in df.columns:
-                df["First"] = ""
-
-            df = df[[c for c in cols_to_keep + ["Last", "First"] if c in df.columns]]
-
-            df["Last"] = df["Last"].astype(str).str.strip().str.title()
-            df["First"] = df["First"].astype(str).str.strip().str.title()
-
-            for col in df.columns:
-                if col not in ["Last", "First", "SB-ATT"]:
-                    df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
-            dfs.append(df)
-        except FileNotFoundError:
-            continue
-        except Exception:
-            continue
-
-    if not dfs:
-        return pd.DataFrame(columns=cols_to_keep + ["Last", "First"])
-
-    combined = pd.concat(dfs, ignore_index=True)
-
-    if "SB-ATT" in combined.columns:
-        split_sb_att = combined["SB-ATT"].astype(str).str.split("-", expand=True)
-        if split_sb_att.shape[1] < 2:
-            split_sb_att[1] = np.nan
-        combined["SB"] = pd.to_numeric(split_sb_att[0], errors="coerce").fillna(0).astype(int)
-        combined["ATT"] = pd.to_numeric(split_sb_att[1], errors="coerce").fillna(0).astype(int)
-    else:
-        combined["SB"] = 0
-        combined["ATT"] = 0
-
-    agg_df = combined.groupby(["Last", "First"], as_index=False).sum(numeric_only=True)
-
-    for col in agg_df.columns:
-        if col not in ["Last", "First", "INN"]:
-            agg_df[col] = agg_df[col].fillna(0).round(0)
-
-    agg_df["CS%"] = np.where(agg_df["ATT"] > 0, (agg_df["CS"] / agg_df["ATT"] * 100).round(1), 0)
-    agg_df["SB-ATT"] = agg_df["SB"].astype(int).astype(str) + "-" + agg_df["ATT"].astype(int).astype(str)
-    agg_df = agg_df.drop(columns=["SB", "ATT"])
-    return agg_df
-
-
-# =====================
-# Acronym tables (from original)
-# =====================
+# =====================================================
+# UI CONSTANTS
+# =====================================================
+STAT_TYPES_ALL = ["Hitting", "Pitching", "Fielding", "Catching"]
+QUAL_MINS = {"Hitting": 1, "Pitching": 1, "Fielding": 1, "Catching": 1}
 
 HITTING_KEY = pd.DataFrame({
-    "Acronym": [
-        "PA", "AB", "H", "AVG", "OBP", "SLG", "OPS", "RBI", "R",
-        "BB", "SO", "XBH", "2B", "3B", "HR", "TB", "SB",
-        "PS/PA", "BB/K", "C%",
-        "QAB", "QAB%", "HHB", "HHB %",
-        "LD%", "FB%", "GB%",
-        "BABIP", "BA/RISP", "2OUTRBI"
-    ],
-    "Meaning": [
-        "Plate Appearances", "At-Bats", "Hits", "Batting Average", "On-Base Percentage",
-        "Slugging Percentage", "On-base Plus Slugging", "Runs Batted In", "Runs Scored",
-        "Walks", "Strikeouts", "Extra-Base Hits", "Doubles", "Triples", "Home Runs",
-        "Total Bases", "Stolen Bases", "Pitches per Plate Appearance", "Walk-to-Strikeout Ratio",
-        "Contact Percentage", "Quality At-Bats", "Quality At-Bat Percentage", "Hard-Hit Balls",
-        "Hard-Hit Ball Percentage", "Line Drive %", "Fly Ball %", "Ground Ball %",
-        "Batting Average on Balls In Play", "Avg. w/ RISP", "Two-Out RBIs"
-    ]
+    "Acronym": ["PA","AB","H","AVG","OBP","SLG","OPS","RBI","R","BB","SO","XBH","2B","3B","HR","TB","SB",
+                "PS/PA","BB/K","C%","QAB","QAB%","HHB","HHB%","LD%","FB%","GB%","BABIP","BA/RISP","2OUTRBI"],
+    "Meaning":  ["Plate Appearances","At-Bats","Hits","Batting Average","On-Base Percentage","Slugging Percentage",
+                 "On-base Plus Slugging","Runs Batted In","Runs Scored","Walks","Strikeouts","Extra-Base Hits",
+                 "Doubles","Triples","Home Runs","Total Bases","Stolen Bases","Pitches per Plate Appearance",
+                 "Walk-to-Strikeout Ratio","Contact Percentage","Quality At-Bats","Quality At-Bat Percentage",
+                 "Hard-Hit Balls","Hard-Hit Ball Percentage","Line Drive Percentage","Fly Ball Percentage",
+                 "Ground Ball Percentage","Batting Average on Balls In Play",
+                 "Batting Average with Runners in Scoring Position","Two-Out RBIs"]
 })
 
 PITCHING_KEY = pd.DataFrame({
-    "Acronym": [
-        "IP", "ERA", "WHIP", "H", "R", "ER", "BB", "BB/INN", "SO", "K-L", "HR",
-        "S%", "FPS%", "FPSO%", "FPSH%", "SM%", "<3%",
-        "LD%", "FB%", "GB%", "HHB%", "WEAK%", "BBS",
-        "BAA", "BABIP", "BA/RISP", "CS", "SB", "SB%", "FIP"
-    ],
-    "Meaning": [
-        "Innings Pitched", "Earned Run Average", "Walks + Hits per Inning", "Hits Allowed",
-        "Runs Allowed", "Earned Runs", "Walks", "Walks per Inning", "Strikeouts",
-        "Strikeouts Looking", "Home Runs Allowed", "Strike %", "First-Pitch Strike %",
-        "% of FPS ABs that end in outs", "% of FPS that are hits", "Swinging Miss %",
-        "% of ABs with ≤3 pitches", "Line Drive %", "Fly Ball %", "Ground Ball %",
-        "Hard-Hit Ball %", "Weak Contact %", "Base on Balls that results in a run",
-        "Batting Avg Against", "BABIP", "Avg. w/ RISP", "Caught Stealing", "Stolen Bases Allowed",
-        "Stolen Base %", "Fielding Independent Pitching"
-    ]
+    "Acronym": ["IP","ERA","WHIP","H","R","ER","BB","BB/INN","SO","K-L","HR","#P","BF","HBP",
+                "S%","FPS%","FPSO%","FPSH%","SM%","<3%","LD%","FB%","GB%","HHB%","WEAK%","BBS",
+                "BAA","BABIP","BA/RISP","CS","SB","SB%","FIP"],
+    "Meaning":  ["Innings Pitched","Earned Run Average","Walks+Hits per Inning","Hits Allowed","Runs Allowed",
+                 "Earned Runs","Walks","Walks per Inning","Strikeouts","Strikeouts Looking","Home Runs Allowed",
+                 "Total Pitches","Batters Faced","Hit By Pitch",
+                 "Strike Percentage","First-Pitch Strike %","% of FPS ABs that end in outs","% of FPS that are hits",
+                 "Swinging Miss %","% of ABs with ≤3 pitches","Line Drive %","Fly Ball %","Ground Ball %",
+                 "Hard-Hit Ball %","Weak Contact %","Base on Balls that score",
+                 "Batting Average Against","Batting Average on Balls In Play","BA with RISP",
+                 "Caught Stealing","Stolen Bases Allowed","Stolen Base %","Fielding Independent Pitching"]
 })
 
-
-# =====================
-# Constants & lightweight helpers for new UI
-# =====================
-STAT_TYPES_ALL = ["Hitting", "Pitching", "Fielding", "Catching"]
-QUAL_MINS = {"Hitting": 1, "Pitching": 0.1, "Fielding": 1, "Catching": 0.1}
-
 FIELDING_KEY = pd.DataFrame({
-    "Acronym": ["TC", "A", "PO", "FPCT", "E", "DP"],
+    "Acronym": ["TC", "A", "PO", "E", "DP", "FPCT"],
     "Meaning": [
-        "Total Chances", "Assists", "Putouts", "Fielding Percentage",
-        "Errors", "Double Plays involvement"
+        "Total Chances","Assists","Putouts","Errors","Double Plays","Fielding Percentage"
     ]
 })
 
 CATCHING_KEY = pd.DataFrame({
     "Acronym": ["INN", "PB", "SB-ATT", "CS", "CS%"],
     "Meaning": [
-        "Innings Caught", "Passed Balls", "Stolen Base Attempts",
-        "Caught Stealing", "Caught Stealing %"
+        "Innings Caught","Passed Balls","Stolen Base Attempts Against","Runners Caught Stealing","Caught Stealing %"
     ]
 })
 
-# Files expected locally (keep it simple per user's note)
-CUMULATIVE_FILE = "cumulative.csv"
-
-# Utility: list available series CSV base names (exclude cumulative)
-def list_series_csvs():
-    names = []
-    for p in glob.glob("*.csv"):
-        base = os.path.splitext(os.path.basename(p))[0]
-        if base.lower() != os.path.splitext(CUMULATIVE_FILE)[0].lower():
-            names.append(base)
-    # Stable order preference: alphabetical
-    return sorted(names)
-
-# Utility: drop rows with missing names
-def _drop_rows_nan_names(df):
-    if df is None or df.empty:
-        return df
-    # Coerce 'Nan', 'nan', 'NaN', 'None', '' to real NaN before dropping rows with both names missing
-    for c in [col for col in ["Last", "First"] if col in df.columns]:
-        s = df[c].astype(str).str.strip()
-        df[c] = s.mask(s.str.lower().isin(["", "nan", "none"]))
-    cols = [c for c in ["Last", "First"] if c in df.columns]
-    if not cols:
-        return df
-    return df.dropna(subset=cols, how="all").reset_index(drop=True).reset_index(drop=True)
-
-# Utility: append a totals row (sum numeric columns)
-def _append_totals(df, tab_name):
-    if df is None or df.empty:
-        return df
-    base = df.copy()
-
-    # Helper to safe sum (robust if column missing)
-    def ssum(col):
-        if col in base.columns:
-            return pd.to_numeric(base[col], errors="coerce").fillna(0).sum()
+# =====================================================
+# HELPERS
+# =====================================================
+def _to_num(x):
+    if isinstance(x, pd.DataFrame):
+        return x.apply(pd.to_numeric, errors="coerce").fillna(0.0)
+    if isinstance(x, pd.Series):
+        return pd.to_numeric(x, errors="coerce").fillna(0.0)
+    try:
+        return float(x)
+    except Exception:
         return 0.0
 
-    total_row = {c: "" for c in base.columns}
-    total_row["Last"] = "Totals"
-    total_row["First"] = ""
+def _col(df: pd.DataFrame, name: str) -> pd.Series:
+    if name in df.columns:
+        return _to_num(df[name])
+    else:
+        return pd.Series(0.0, index=df.index, dtype="float64")
 
-    if tab_name == "Pitching":
-        # Sum raw counts
-        IP = ssum("_IP") if "_IP" in base.columns else ssum("IP")
-        ER = ssum("_ER") if "_ER" in base.columns else ssum("ER")
-        H  = ssum("_H")  if "_H"  in base.columns else ssum("H")
-        BB = ssum("_BB") if "_BB" in base.columns else ssum("BB")
-        HR = ssum("_HR") if "_HR" in base.columns else ssum("HR")
-        SO = ssum("_SO") if "_SO" in base.columns else ssum("SO")
-        BF = ssum("_BF") if "_BF" in base.columns else ssum("BF")
-        NP = ssum("_NP") if "_NP" in base.columns else ssum("#P")
-        HBP= ssum("_HBP") if "_HBP" in base.columns else ssum("HBP")
-        STR= ssum("_STR") if "_STR" in base.columns else np.nan
-        FPS= ssum("_FPS") if "_FPS" in base.columns else np.nan
-        FPSO= ssum("_FPSO") if "_FPSO" in base.columns else np.nan
-        FPSH= ssum("_FPSH") if "_FPSH" in base.columns else np.nan
-        GBc= ssum("_GB") if "_GB" in base.columns else np.nan
-        FBc= ssum("_FB") if "_FB" in base.columns else np.nan
-        LDc= ssum("_LD") if "_LD" in base.columns else np.nan
-        HHBc= ssum("_HHB") if "_HHB" in base.columns else np.nan
-        WEAKc= ssum("_WEAK") if "_WEAK" in base.columns else np.nan
-        U3 = ssum("_U3") if "_U3" in base.columns else np.nan
-        SMc= ssum("_SM") if "_SM" in base.columns else np.nan
-        CS = ssum("_CS") if "_CS" in base.columns else ssum("CS")
-        SB = ssum("_SB") if "_SB" in base.columns else ssum("SB")
+def _safe_div(num, den) -> pd.Series:
+    num = _to_num(num)
+    den = _to_num(den)
 
-        # Derived totals
-        def rdiv(n, d):
-            return (n / d) if (d and d != 0 and not np.isnan(d)) else np.nan
+    if isinstance(num, pd.Series) and not isinstance(den, pd.Series):
+        den = pd.Series(float(den), index=num.index)
+    if isinstance(den, pd.Series) and not isinstance(num, pd.Series):
+        num = pd.Series(float(num), index=den.index)
 
-        total_row.update({
-            "IP": round(IP if not np.isnan(IP) else 0, 2),
-            "ER": ER, "H": H, "BB": BB, "HR": HR, "SO": SO,
-            "ERA": round(rdiv(ER * 9, IP) or 0, 2),
-            "WHIP": round(rdiv(BB + H, IP) or 0, 2),
-            "BB/INN": round(rdiv(BB, IP) or 0, 2),
-            "FIP": round((rdiv((13 * HR + 3 * BB - 2 * SO), IP) or 0) + 3.1, 2),
-            "CS": CS, "SB": SB,
-        })
-        # Percentages if denominators exist
-        if pd.notna(NP) and NP > 0 and pd.notna(STR):
-            total_row["S%"] = round(STR / NP * 100, 2)
-        if pd.notna(BF) and BF > 0:
-            if pd.notna(FPS): total_row["FPS%"] = round(FPS / BF * 100, 2)
-            if pd.notna(FPSO): total_row["FPSO%"] = round(FPSO / BF * 100, 2)
-            if pd.notna(FPSH): total_row["FPSH%"] = round(FPSH / BF * 100, 2)
-            if pd.notna(U3): total_row["<3%"] = round(U3 / BF * 100, 2)
-        bb_balls = (BF - SO - BB - HBP) if pd.notna(BF) else np.nan
-        if pd.notna(NP) and NP > 0 and pd.notna(SMc):
-            total_row["SM%"] = round(SMc / NP * 100, 2)
-        if pd.notna(bb_balls) and bb_balls > 0:
-            if pd.notna(GBc): total_row["GB%"] = round(GBc / bb_balls * 100, 2)
-            if pd.notna(FBc): total_row["FB%"] = round(FBc / bb_balls * 100, 2)
-            if pd.notna(LDc): total_row["LD%"] = round(LDc / bb_balls * 100, 2)
-            if pd.notna(HHBc): total_row["HHB%"] = round(HHBc / bb_balls * 100, 2)
-            if pd.notna(WEAKc): total_row["WEAK%"] = round(WEAKc / bb_balls * 100, 2)
-        if (SB + CS) > 0:
-            total_row["SB%"] = round(SB / (SB + CS) * 100, 2)
-        # BAA/BABIP
-        denom_baa = (BF - BB - HBP) if pd.notna(BF) else np.nan
-        if pd.notna(denom_baa) and denom_baa > 0:
-            total_row["BAA"] = round(H / denom_baa, 3)
-        denom_babip = (BF - SO - HR - BB - HBP) if pd.notna(BF) else np.nan
-        if pd.notna(denom_babip) and denom_babip > 0:
-            total_row["BABIP"] = round((H - HR) / denom_babip, 3)
+    if isinstance(num, pd.Series) and isinstance(den, pd.Series):
+        num, den = num.align(den, fill_value=0.0)
+        out = pd.Series(0.0, index=num.index, dtype="float64")
+        mask = den != 0
+        out.loc[mask] = num.loc[mask] / den.loc[mask]
+        return out
 
-    elif tab_name == "Hitting":
-        # Sum raw counts
-        for c in ["PA","AB","H","BB","HBP","SF","TB","R","RBI","SO","2B","3B","HR","SB","CS","QAB","HHB","LD","FB","GB","H_RISP","AB_RISP","PS","2OUTRBI","XBH"]:
-            total_row[c] = ssum(c)
-        # Derived
-        AB = total_row.get("AB", 0)
-        H = total_row.get("H", 0)
-        BB = total_row.get("BB", 0)
-        HBP = total_row.get("HBP", 0)
-        SF = total_row.get("SF", 0)
-        PA = total_row.get("PA", 0)
-        TB = total_row.get("TB", 0)
-        SO = total_row.get("SO", 0)
-        HR = total_row.get("HR", 0)
-        denom_obp = AB + BB + HBP + SF
-        total_row.update({
-            "AVG": round((H/AB) if AB else 0, 3),
-            "OBP": round(((H+BB+HBP)/denom_obp) if denom_obp else 0, 3),
-            "SLG": round((TB/AB) if AB else 0, 3),
-            "OPS": 0,  # fill after SLG/OBP
-            "QAB%": round((total_row["QAB"] / PA) if PA else 0, 3),
-            "BB/K": round((BB/SO) if SO else BB, 3),
-            "C%": round((1 - (SO/AB)) if AB else 0, 3),
-        })
-        total_row["OPS"] = round(total_row["OBP"] + total_row["SLG"], 3)
-        total_batted = total_row["LD"] + total_row["FB"] + total_row["GB"]
-        total_row["LD%"] = round((total_row["LD"]/total_batted) if total_batted else 0, 3)
-        total_row["FB%"] = round((total_row["FB"]/total_batted) if total_batted else 0, 3)
-        total_row["GB%"] = round((total_row["GB"]/total_batted) if total_batted else 0, 3)
-        denom_babip = AB - SO - HR + SF
-        total_row["BABIP"] = round(((H - HR)/denom_babip) if denom_babip else 0, 3)
-        total_row["BA/RISP"] = round((total_row["H_RISP"]/total_row["AB_RISP"]) if total_row["AB_RISP"] else 0, 3)
-        total_row["PS/PA"] = round((total_row["PS"] / PA) if PA else 0, 3)
-        total_row["HHB%"] = round((total_row["HHB"]/AB) if AB else 0, 3)
+    return pd.Series(0.0 if float(den) == 0.0 else float(num) / float(den))
 
-    elif tab_name == "Fielding":
-        for c in ["TC","A","PO","E","DP"]:
-            total_row[c] = ssum(c)
-        TC = total_row["TC"]
-        total_row["FPCT"] = round(((total_row["A"] + total_row["PO"]) / TC) if TC else 0, 3)
+def _pct_to_ratio(series_or_val):
+    """Accept percent in 0-1 or 0-100 scale, return as 0-1 float."""
+    s = _to_num(series_or_val)
+    if isinstance(s, pd.Series):
+        return np.where(s > 1.5, s / 100.0, s)
+    try:
+        return s / 100.0 if float(s) > 1.5 else float(s)
+    except Exception:
+        return 0.0
 
-    elif tab_name == "Catching":
-        for c in ["INN","PB","CS"]:
-            total_row[c] = ssum(c)
-        # Handle SB-ATT split if present in dataframe
-        if "SB-ATT" in base.columns:
-            # base already split during aggregation; reconstruct totals from SB and ATT if available
-            if "ATT" in base.columns:
-                ATT = pd.to_numeric(base["ATT"], errors="coerce").fillna(0).sum()
-            else:
-                # fallback: parse each row's SB-ATT
-                ATT = base["SB-ATT"].astype(str).str.split("-", expand=True).iloc[:,1].apply(pd.to_numeric, errors="coerce").fillna(0).sum()
-            SB = ssum("SB") if "SB" in base.columns else base["SB-ATT"].astype(str).str.split("-", expand=True).iloc[:,0].apply(pd.to_numeric, errors="coerce").fillna(0).sum()
+def _convert_innings_value(ip):
+    """Baseball tenths → decimal innings (4.1 -> 4 + 1/3, 4.2 -> 4 + 2/3)."""
+    try:
+        if pd.isna(ip):
+            return np.nan
+        ip = float(ip)
+        whole = int(ip)
+        frac_tenths = round((ip - whole) * 10)
+        if frac_tenths == 1:
+            return whole + (1.0/3.0)
+        elif frac_tenths == 2:
+            return whole + (2.0/3.0)
         else:
-            SB = ssum("SB")
-            ATT = SB + ssum("CS")
-        total_row["SB-ATT"] = f"{int(SB)}-{int(ATT)}"
-        total_row["CS%"] = round((total_row["CS"]/ATT * 100) if ATT else 0, 2)
+            return ip
+    except Exception:
+        return np.nan
 
-    # Compose totals row and return
-    totals_df = pd.DataFrame([total_row])
-    return pd.concat([base, totals_df], ignore_index=True)
+def clean_df(df: pd.DataFrame) -> pd.DataFrame:
+    df = df.copy()
+    df.columns = [str(c).replace(".1", "").replace(".2", "").strip() for c in df.columns]
+    df = df.loc[:, ~pd.Index(df.columns).duplicated(keep="first")]
+    if "Last" not in df.columns: df["Last"] = ""
+    if "First" not in df.columns: df["First"] = ""
 
-# Utility: filter selected players (by Last)
-def filter_players(df, selected_lastnames):
-    if not selected_lastnames:
+    # Drop rows where BOTH names are NaN-like
+    df = _drop_rows_nan_names(df)
+
+    # Title-case remaining names
+    df["Last"] = df["Last"].astype(str).str.strip().str.title()
+    df["First"] = df["First"].astype(str).str.strip().str.title()
+    return df
+
+def _smart_read_csv(path: str) -> pd.DataFrame:
+    """
+    Read a series CSV robustly:
+    - Try header=1 (common for GameChanger exports), then header=0
+    - If neither yields known columns, try to auto-detect the header row by scanning first 10 rows
+    - Guarantee 'Last' and 'First' columns (rename first two text-like cols if necessary)
+    """
+    def _read_try(header):
+        try:
+            return pd.read_csv(path, header=header)
+        except Exception:
+            return None
+
+    known_cols = {"Last", "First", "PA", "AB", "IP", "BF", "TC", "INN"}
+
+    # Try common headers
+    for h in (1, 0):
+        df = _read_try(h)
+        if df is not None and any(c in df.columns for c in known_cols):
+            return df
+
+    # Try to detect header row
+    try:
+        raw = pd.read_csv(path, header=None, nrows=20)
+        header_row = None
+        for i in range(min(10, len(raw))):
+            row_vals = raw.iloc[i].astype(str).str.strip().tolist()
+            if any(v in ("Last","First","PA","AB","IP","BF","TC","INN") for v in row_vals):
+                header_row = i
+                break
+        if header_row is not None:
+            df = pd.read_csv(path, header=header_row)
+            return df
+    except Exception:
+        pass
+
+    # Fallback
+    df = pd.read_csv(path, header=0)
+    return df
+
+def _ensure_name_cols(df: pd.DataFrame) -> pd.DataFrame:
+    df = df.copy()
+    cols = [str(c) for c in df.columns]
+    if "Last" not in cols and len(cols) >= 1:
+        df.rename(columns={cols[0]: "Last"}, inplace=True)
+    if "First" not in df.columns and len(df.columns) >= 2:
+        df.rename(columns={df.columns[1]: "First"}, inplace=True)
+    if "Last" not in df.columns:
+        df["Last"] = ""
+    if "First" not in df.columns:
+        df["First"] = ""
+    return df
+
+def _apply_display_formatting(df: pd.DataFrame, tab_name: str):
+    df_disp = df.copy()
+    col_config = {}
+
+    pct_cols = [c for c in df_disp.columns if isinstance(c, str) and c.endswith("%")]
+    for c in pct_cols:
+        # underlying numeric as 0-1; render as XX.X%
+        df_disp[c] = _to_num(df_disp[c]) * 100.0
+        col_config[c] = st.column_config.NumberColumn(format="%.1f%%")
+
+    if tab_name == "Hitting":
+        def _dot3(x):
+            if pd.isna(x): return ""
+            try:
+                s = f"{float(x):.3f}"
+            except Exception:
+                return ""
+            return s[1:] if s.startswith("0") else s
+        for c in [c for c in ["AVG","OBP","SLG","OPS","BABIP"] if c in df_disp.columns]:
+            df_disp[c] = _to_num(df_disp[c]).apply(_dot3)
+            col_config[c] = st.column_config.TextColumn()
+
+    return df_disp, col_config
+
+def _pitching_ip_gt_zero(df: pd.DataFrame) -> pd.DataFrame:
+    if df.empty or "IP" not in df.columns:
+        return df
+    ip_dec = pd.to_numeric(df["IP"].apply(_convert_innings_value), errors="coerce").fillna(0.0)
+    return df[ip_dec > 0.0].reset_index(drop=True)
+
+
+
+def _is_nanlike_series(s: pd.Series) -> pd.Series:
+    """Return boolean Series where entries are NaN-ish: NaN, empty, or strings like 'nan', 'none', 'null' (case-insensitive)."""
+    s_str = s.astype(str).str.strip()
+    return (
+        s.isna()
+        | s_str.eq("")
+        | s_str.str.lower().isin({"nan", "none", "null", "n/a", "na"})
+    )
+
+def _drop_rows_nan_names(df: pd.DataFrame) -> pd.DataFrame:
+    if not {"Last","First"}.issubset(df.columns):
+        return df
+    last_raw = df["Last"]
+    first_raw = df["First"]
+    last_is_nan = _is_nanlike_series(last_raw)
+    first_is_nan = _is_nanlike_series(first_raw)
+    # drop when BOTH are nan-like
+    keep = ~(last_is_nan & first_is_nan)
+    return df.loc[keep].copy()
+
+# =====================================================
+# HITTING
+# =====================================================
+HIT_INPUT_COLS = [
+    "Last","First","PA","AB","H","BB","HBP","SF","TB","R","RBI","SO",
+    "2B","3B","HR","SB","CS","QAB","HHB","LD","FB","GB","H_RISP","AB_RISP",
+    "PS","2 out RBI","XBH","QAB%","HHB%","LD%","FB%","GB%","C%"
+]
+
+def _backfill_hitting_counts(df: pd.DataFrame) -> pd.DataFrame:
+    df = df.copy()
+    # Coerce known numeric cols
+    for c in [col for col in df.columns if col not in ("Last","First")]:
+        df[c] = _to_num(df[c])
+
+    # Balls in play (for LD/FB/GB)
+    AB  = _col(df, "AB")
+    SO  = _col(df, "SO")
+    HR  = _col(df, "HR")
+    SF  = _col(df, "SF")
+    BIP = AB - SO - HR + SF
+    BIP = BIP.clip(lower=0)
+
+    # Reconstruct LD/FB/GB from % if counts absent or all zero
+    for stat in ["LD","FB","GB"]:
+        pct_col = f"{stat}%"
+        if stat not in df.columns or _to_num(df[stat]).sum() == 0:
+            if pct_col in df.columns:
+                ratio = _pct_to_ratio(df[pct_col])
+                df[stat] = np.rint(ratio * BIP).astype(float)
+
+    # Reconstruct QAB from QAB% * PA if missing
+    if ("QAB" not in df.columns or _to_num(df["QAB"]).sum() == 0) and "QAB%" in df.columns:
+        df["QAB"] = np.rint(_pct_to_ratio(df["QAB%"]) * _col(df, "PA")).astype(float)
+
+    # Reconstruct HHB from HHB% * AB (fallback to PA)
+    if ("HHB" not in df.columns or _to_num(df["HHB"]).sum() == 0) and "HHB%" in df.columns:
+        base = _col(df, "AB")
+        base = np.where(base > 0, base, _col(df, "PA"))
+        df["HHB"] = np.rint(_pct_to_ratio(df["HHB%"]) * base).astype(float)
+
+    return df
+
+def prepare_batting_stats(df: pd.DataFrame) -> pd.DataFrame:
+    df = clean_df(df)
+    keep = [c for c in HIT_INPUT_COLS if c in df.columns]
+    df = df[["Last","First"] + [c for c in keep if c not in ("Last","First")]].copy()
+    df = _backfill_hitting_counts(df)
+    # Ensure minimal columns for grouping
+    for _colname in ("Last","First","PA","AB"):
+        if _colname not in df.columns:
+            df[_colname] = 0
+
+    # Numerics
+    for c in df.columns:
+        if c not in ("Last","First"):
+            df[c] = _to_num(df[c])
+
+    # Derived rates
+    PA  = _col(df, "PA")
+    AB  = _col(df, "AB")
+    H   = _col(df, "H")
+    BB  = _col(df, "BB")
+    HBP = _col(df, "HBP")
+    SF  = _col(df, "SF")
+    TB  = _col(df, "TB")
+    SO  = _col(df, "SO")
+    HR  = _col(df, "HR")
+    QAB = _col(df, "QAB")
+    HHB = _col(df, "HHB")
+    LD  = _col(df, "LD")
+    FB  = _col(df, "FB")
+    GB  = _col(df, "GB")
+    H_RISP  = _col(df, "H_RISP")
+    AB_RISP = _col(df, "AB_RISP")
+    PS = _col(df, "PS")
+
+    batted = LD + FB + GB
+    df["AVG"] = _safe_div(H, AB).round(3)
+    df["OBP"] = _safe_div(H + BB + HBP, AB + BB + HBP + SF).round(3)
+    df["SLG"] = _safe_div(TB, AB).round(3)
+    df["OPS"] = (df["OBP"] + df["SLG"]).round(3)
+    df["QAB%"] = _safe_div(QAB, PA).round(3)
+    df["HHB%"] = _safe_div(HHB, AB.where(AB>0, PA)).round(3)
+    df["LD%"] = _safe_div(LD, batted).round(3)
+    df["FB%"] = _safe_div(FB, batted).round(3)
+    df["GB%"] = _safe_div(GB, batted).round(3)
+    df["BABIP"] = _safe_div(H - HR, AB - SO - HR + SF).round(3)
+    df["BA/RISP"] = _safe_div(H_RISP, AB_RISP).round(3)
+    df["PS/PA"] = _safe_div(PS, PA).round(3)
+    df["BB/K"] = _safe_div(BB, SO.replace(0, np.nan)).fillna(0.0).round(3)
+    df["C%"] = _safe_div(AB - SO, AB).round(3)
+
+    # Friendly rename
+    if "2 out RBI" in df.columns:
+        df.rename(columns={"2 out RBI": "2OUTRBI"}, inplace=True)
+
+    display_cols = [
+        "Last","First","PA","AB","AVG","OBP","OPS","SLG","H","R","RBI","BB","SO","XBH","2B","3B","HR",
+        "TB","SB","PS/PA","BB/K","C%","QAB","QAB%","HHB","HHB%","LD%","FB%","GB%","BABIP","BA/RISP","2OUTRBI"
+    ]
+    existing = [c for c in display_cols if c in df.columns]
+    return df[existing].copy()
+
+def aggregate_stats_hitting(series_names):
+    dfs = []
+    for name in series_names:
+        file = f"{name}.csv"
+        if not os.path.exists(file):
+            continue
+        df = _ensure_name_cols(_smart_read_csv(file))
+        dfs.append(df)
+    if not dfs:
+        return pd.DataFrame(columns=HIT_INPUT_COLS)
+    combined = pd.concat(dfs, ignore_index=True)
+    return _drop_rows_nan_names(clean_df(combined))
+
+def generate_aggregated_hitting_df(df_raw: pd.DataFrame) -> pd.DataFrame:
+    df = clean_df(df_raw)
+    df = _backfill_hitting_counts(df)
+    # Ensure minimal columns for grouping
+    for _colname in ("Last","First","PA","AB"):
+        if _colname not in df.columns:
+            df[_colname] = 0
+    # numeric
+    for c in df.columns:
+        if c not in ("Last","First"):
+            df[c] = _to_num(df[c])
+    # aggregate by player (sum counts)
+    agg = df.groupby(["Last","First"], as_index=False).sum(numeric_only=True)
+    # recompute rates on combined (fresh averages)
+    agg = _drop_rows_nan_names(clean_df(agg))
+    return prepare_batting_stats(agg)
+
+# =====================================================
+# PITCHING
+# =====================================================
+PIT_INPUT_COLS = [
+    "Last","First","IP","ER","H","R","BB","SO","K-L","HR","#P","BF","HBP",
+    "S%","FPS%","FPSO%","FPSH%","SM%","LD%","FB%","GB%","BABIP","BA/RISP",
+    "CS","SB","SB%","<3%","HHB%","WEAK%","BBS","ERA","WHIP","FIP","BB/INN","BAA"
+]
+
+def _backfill_pitching_counts(df: pd.DataFrame) -> pd.DataFrame:
+    df = df.copy()
+    for c in [col for col in df.columns if col not in ("Last","First")]:
+        df[c] = _to_num(df[c])
+
+    # Decimal innings for calculations
+    if "IP" in df.columns:
+        df["_IP_DEC"] = df["IP"].apply(_convert_innings_value)
+    else:
+        df["_IP_DEC"] = 0.0
+
+    # Batted balls = BF - SO - BB - HBP
+    BF  = _col(df, "BF")
+    SO  = _col(df, "SO")
+    BB  = _col(df, "BB")
+    HBP = _col(df, "HBP")
+    BIP = (BF - SO - BB - HBP).clip(lower=0)
+
+    # From % → counts (robust to scale 0-1 or 0-100)
+    if "S%" in df.columns:
+        df["Strikes"] = np.rint(_pct_to_ratio(df["S%"]) * _col(df, "#P")).astype(float)
+    if "FPS%" in df.columns:
+        df["FirstPitchStrikes"] = np.rint(_pct_to_ratio(df["FPS%"]) * BF).astype(float)
+    if "FPSO%" in df.columns:
+        df["FPSO"] = np.rint(_pct_to_ratio(df["FPSO%"]) * BF).astype(float)
+    if "FPSH%" in df.columns:
+        df["FPSH"] = np.rint(_pct_to_ratio(df["FPSH%"]) * BF).astype(float)
+    if "SM%" in df.columns:
+        df["SwingMisses"] = np.rint(_pct_to_ratio(df["SM%"]) * _col(df, "#P")).astype(float)
+    if "LD%" in df.columns:
+        df["LineDrives"] = np.rint(_pct_to_ratio(df["LD%"]) * BIP).astype(float)
+    if "FB%" in df.columns:
+        df["FlyBalls"] = np.rint(_pct_to_ratio(df["FB%"]) * BIP).astype(float)
+    if "GB%" in df.columns:
+        df["GroundBalls"] = np.rint(_pct_to_ratio(df["GB%"]) * BIP).astype(float)
+    if "HHB%" in df.columns:
+        df["HardHitBalls"] = np.rint(_pct_to_ratio(df["HHB%"]) * BIP).astype(float)
+    if "WEAK%" in df.columns:
+        df["WeakContact"] = np.rint(_pct_to_ratio(df["WEAK%"]) * BIP).astype(float)
+    if "<3%" in df.columns:
+        df["Under3Pitches"] = np.rint(_pct_to_ratio(df["<3%"]) * BF).astype(float)
+
+    return df
+
+def prepare_pitching_stats(df: pd.DataFrame) -> pd.DataFrame:
+    df = clean_df(df)
+    keep = [c for c in PIT_INPUT_COLS if c in df.columns]
+    df = df[["Last","First"] + [c for c in keep if c not in ("Last","First")]].copy()
+    df = _backfill_pitching_counts(df)
+    for _colname in ("Last","First","IP","BF"):
+        if _colname not in df.columns:
+            df[_colname] = 0
+
+    # Coerce numeric
+    for c in df.columns:
+        if c not in ("Last","First"):
+            df[c] = _to_num(df[c])
+
+    # Decimal IP
+    df["_IP_DEC"] = df["IP"].apply(_convert_innings_value) if "IP" in df.columns else 0.0
+
+    # Derive core if missing / recompute from counts
+    ER = _col(df, "ER"); H = _col(df, "H"); BB = _col(df, "BB"); SO = _col(df, "SO")
+    HR = _col(df, "HR"); P = _col(df, "#P"); BF = _col(df, "BF"); HBP = _col(df, "HBP")
+    Strikes = _col(df, "Strikes"); FPS = _col(df, "FirstPitchStrikes")
+    FPSO = _col(df, "FPSO"); FPSH = _col(df, "FPSH")
+    GB = _col(df, "GroundBalls"); FB = _col(df, "FlyBalls"); LD = _col(df, "LineDrives")
+    HHB = _col(df, "HardHitBalls"); WEAK = _col(df, "WeakContact")
+    U3 = _col(df, "Under3Pitches"); SM = _col(df, "SwingMisses")
+
+    ip_dec = _col(df, "_IP_DEC")
+    df["ERA"] = _safe_div(ER * 9.0, ip_dec).round(3)
+    df["WHIP"] = _safe_div(BB + H, ip_dec).round(3)
+    df["BB/INN"] = _safe_div(BB, ip_dec).round(3)
+    C = 3.1
+    df["FIP"] = (_safe_div(13*HR + 3*(BB + HBP) - 2*SO, ip_dec) + C).round(3)
+
+    # Recompute percentages from counts
+    BIP = (BF - SO - BB - HBP).clip(lower=0)
+    df["S%"] = _safe_div(Strikes, P).round(3)
+    df["FPS%"] = _safe_div(FPS, BF).round(3)
+    df["FPSO%"] = _safe_div(FPSO, BF).round(3)
+    df["FPSH%"] = _safe_div(FPSH, BF).round(3)
+    df["SM%"] = _safe_div(SM, P).round(3)
+    df["LD%"] = _safe_div(LD, BIP).round(3)
+    df["FB%"] = _safe_div(FB, BIP).round(3)
+    df["GB%"] = _safe_div(GB, BIP).round(3)
+    df["HHB%"] = _safe_div(HHB, BIP).round(3)
+    df["WEAK%"] = _safe_div(WEAK, BIP).round(3)
+    df["<3%"] = _safe_div(U3, BF).round(3)
+
+    # SB%
+    SB = _col(df, "SB"); CS = _col(df, "CS")
+    df["SB%"] = np.where((SB + CS) > 0, (SB / (SB + CS)).round(3), 0.0)
+
+    # BAA, BABIP
+    df["BAA"] = _safe_div(H, BF - BB - HBP).round(3)
+    df["BABIP"] = _safe_div(H - HR, BF - SO - HR - BB - HBP).round(3)
+
+    # Keep the display order
+    display_cols = [
+        "Last","First","IP","ERA","WHIP","SO","K-L","H","R","ER","BB","BB/INN",
+        "FIP","S%","FPS%","FPSO%","FPSH%","BAA","BBS","SM%","LD%","FB%","GB%","BABIP",
+        "BA/RISP","CS","SB","SB%","<3%","HHB%","WEAK%","#P","BF","HBP"
+    ]
+    existing = [c for c in display_cols if c in df.columns]
+    return df[existing].copy()
+
+def aggregate_stats_pitching(series_names):
+    dfs = []
+    for name in series_names:
+        file = f"{name}.csv"
+        if not os.path.exists(file):
+            continue
+        df = _ensure_name_cols(_smart_read_csv(file))
+        dfs.append(df)
+    if not dfs:
+        return pd.DataFrame(columns=PIT_INPUT_COLS)
+    combined = pd.concat(dfs, ignore_index=True)
+    return _drop_rows_nan_names(clean_df(combined))
+
+def generate_aggregated_pitching_df(df_raw: pd.DataFrame) -> pd.DataFrame:
+    df = clean_df(df_raw)
+    df = _backfill_pitching_counts(df)
+    for _colname in ("Last","First","IP","BF"):
+        if _colname not in df.columns:
+            df[_colname] = 0
+    for c in df.columns:
+        if c not in ("Last","First"):
+            df[c] = _to_num(df[c])
+    agg = df.groupby(["Last","First"], as_index=False).sum(numeric_only=True)
+    agg = _drop_rows_nan_names(clean_df(agg))
+    return prepare_pitching_stats(agg)
+
+# =====================================================
+# FIELDING
+# =====================================================
+FLD_INPUT_COLS = ["Last","First","TC","A","PO","FPCT","E","DP"]
+
+def prepare_fielding_stats(df: pd.DataFrame) -> pd.DataFrame:
+    df = clean_df(df)
+    keep = [c for c in FLD_INPUT_COLS if c in df.columns]
+    df = df[["Last","First"] + [c for c in keep if c not in ("Last","First")]].copy()
+    for c in df.columns:
+        if c not in ("Last","First"):
+            df[c] = _to_num(df[c])
+    if "FPCT" not in df.columns and {"PO","A","TC"}.issubset(df.columns):
+        df["FPCT"] = _safe_div(_col(df, "PO") + _col(df, "A"), _col(df, "TC")).round(3)
+    display_cols = ["Last","First","TC","PO","A","E","DP","FPCT"]
+    existing = [c for c in display_cols if c in df.columns]
+    return df[existing].copy()
+
+def aggregate_stats_fielding(series_names):
+    dfs = []
+    for name in series_names:
+        file = f"{name}.csv"
+        if not os.path.exists(file):
+            continue
+        df = _ensure_name_cols(_smart_read_csv(file))
+        dfs.append(df)
+    if not dfs:
+        return pd.DataFrame(columns=FLD_INPUT_COLS)
+    combined = pd.concat(dfs, ignore_index=True)
+    return _drop_rows_nan_names(clean_df(combined))
+
+# =====================================================
+# CATCHING
+# =====================================================
+CAT_INPUT_COLS = ["Last","First","INN","PB","SB-ATT","CS","CS%"]
+
+def prepare_catching_stats(df: pd.DataFrame) -> pd.DataFrame:
+    df = clean_df(df)
+    keep = [c for c in CAT_INPUT_COLS if c in df.columns]
+    df = df[["Last","First"] + [c for c in keep if c not in ("Last","First")]].copy()
+
+    # --- Parse SB-ATT before numeric coercion ---
+    if "SB-ATT" in df.columns:
+        # Build numeric SB allowed and ATT from strings like "5-5"
+        parsed = df["SB-ATT"].apply(_parse_sb_att)
+        df["_SB_ALLOWED"] = parsed.apply(lambda t: t[0])
+        df["_ATTEMPTS"]   = parsed.apply(lambda t: t[1])
+        # Keep display column as attempts
+        df["SB-ATT"] = df["_ATTEMPTS"]
+
+        # If CS missing or zero, compute CS = ATTEMPTS - SB_ALLOWED
+        if "CS" not in df.columns:
+            df["CS"] = df["_ATTEMPTS"] - df["_SB_ALLOWED"]
+        else:
+            cs_num = pd.to_numeric(df["CS"], errors="coerce").fillna(0.0)
+            need = cs_num == 0
+            df.loc[need, "CS"] = (df.loc[need, "_ATTEMPTS"] - df.loc[need, "_SB_ALLOWED"]).astype(float)
+
+    # Now coerce numerics
+    for c in df.columns:
+        if c not in ("Last","First"):
+            df[c] = _to_num(df[c])
+
+    # Compute CS% if missing or zero
+    if "CS%" not in df.columns:
+        df["CS%"] = 0.0
+    att = df["SB-ATT"] if "SB-ATT" in df.columns else 0.0
+    cs = df["CS"] if "CS" in df.columns else 0.0
+    with np.errstate(divide='ignore', invalid='ignore'):
+        cs_pct = np.where(_to_num(att) > 0, _to_num(cs) / _to_num(att), 0.0)
+    df["CS%"] = cs_pct.round(3)
+
+    # Clean up helper cols if they exist
+    for helper in ["_SB_ALLOWED","_ATTEMPTS"]:
+        if helper in df.columns:
+            df.drop(columns=[helper], inplace=True)
+
+    display_cols = ["Last","First","INN","PB","SB-ATT","CS","CS%"]
+    existing = [c for c in display_cols if c in df.columns]
+    return df[existing].copy()
+
+def aggregate_stats_catching(series_names):
+    dfs = []
+    for name in series_names:
+        file = f"{name}.csv"
+        if not os.path.exists(file):
+            continue
+        df = _ensure_name_cols(_smart_read_csv(file))
+        dfs.append(df)
+    if not dfs:
+        return pd.DataFrame(columns=CAT_INPUT_COLS)
+    combined = pd.concat(dfs, ignore_index=True)
+    return _drop_rows_nan_names(clean_df(combined))
+
+# =====================================================
+# DATA LOADING / ORCHESTRATION
+# =====================================================
+@st.cache_data(show_spinner=False)
+def list_series_csvs():
+    files = [os.path.basename(p) for p in glob.glob("*.csv") if not os.path.basename(p).startswith("~")]
+    series = []
+    for f in files:
+        name = os.path.splitext(f)[0]
+        if name.lower() != "cumulative":
+            series.append(name)
+    return sorted(series)
+
+@st.cache_data(show_spinner=False)
+def load_cumulative():
+    if not os.path.exists("cumulative.csv"):
+        return {"Hitting": pd.DataFrame(),"Pitching": pd.DataFrame(),
+                "Fielding": pd.DataFrame(),"Catching": pd.DataFrame()}
+    raw = pd.read_csv("cumulative.csv", header=1)
+    raw = clean_df(raw)
+    return {
+        "Hitting":  prepare_batting_stats(raw.copy()),
+        "Pitching": prepare_pitching_stats(raw.copy()),
+        "Fielding": prepare_fielding_stats(raw.copy()),
+        "Catching": prepare_catching_stats(raw.copy()),
+    }
+
+@st.cache_data(show_spinner=False)
+def load_series(stat_types, series_names):
+    out = {}
+    if "Hitting" in stat_types:
+        agg = aggregate_stats_hitting(series_names)
+        out["Hitting"] = generate_aggregated_hitting_df(agg)
+    if "Pitching" in stat_types:
+        agg = aggregate_stats_pitching(series_names)
+        out["Pitching"] = generate_aggregated_pitching_df(agg)
+    if "Fielding" in stat_types:
+        agg = aggregate_stats_fielding(series_names)
+        for c in agg.columns:
+            if c not in ("Last","First"):
+                agg[c] = _to_num(agg[c])
+        agg = agg.groupby(["Last","First"], as_index=False).sum(numeric_only=True)
+        out["Fielding"] = prepare_fielding_stats(agg)
+    if "Catching" in stat_types:
+        agg = aggregate_stats_catching(series_names)
+        for c in agg.columns:
+            if c not in ("Last","First"):
+                agg[c] = _to_num(agg[c])
+        agg = agg.groupby(["Last","First"], as_index=False).sum(numeric_only=True)
+        out["Catching"] = prepare_catching_stats(agg)
+    return out
+
+def filter_players(df, selected_players):
+    if df.empty or not selected_players:
         return df
     if "Last" not in df.columns:
         return df
-    return df[df["Last"].isin(selected_lastnames)].copy()
+    return df[df["Last"].isin(selected_players)].reset_index(drop=True)
 
-# Pitching IP > 0 filter
-def _pitching_ip_gt_zero(df):
-    if "IP" not in df.columns:
-        return df
-    return df[df["IP"].fillna(0) > 0].copy()
-
-# Extract all player last names from frames (dict of dfs)
-def extract_all_players(frames):
+def extract_all_players(frames_dict):
     names = set()
-    for df in frames.values():
-        if df is not None and not df.empty and "Last" in df.columns:
-            names.update(df["Last"].dropna().astype(str))
+    for df in frames_dict.values():
+        if isinstance(df, pd.DataFrame) and {"Last","First"}.issubset(df.columns):
+            names.update(df["Last"].dropna().astype(str).tolist())
     return sorted(names)
 
-# Display formatting (rates -> .xxx where relevant + Streamlit column_config)
-RATE_COLS = {
-    "Hitting": ["AVG", "OBP", "SLG", "OPS", "QAB%", "BB/K", "C%", "HHB%", "LD%", "FB%", "GB%", "BABIP", "BA/RISP", "PS/PA"],
-    "Pitching": ["ERA", "WHIP", "BB/INN", "S%", "FPS%", "FPSO%", "FPSH%", "SM%", "LD%", "FB%", "GB%", "HHB%", "WEAK%", "BAA", "BABIP", "BA/RISP", "SB%", "<3%"],
-}
-
-def _apply_display_formatting(df, tab_name):
-    if df is None or df.empty:
-        return df, {}
-    out = df.copy()
-
-    # Hide internal columns (prefixed with '_')
-    internal_cols = [c for c in out.columns if isinstance(c, str) and c.startswith('_')]
-    out = out[[c for c in out.columns if c not in internal_cols]]
-
-    # Percent columns -> XX.XX%
-    pct_cols = [c for c in out.columns if isinstance(c, str) and c.strip().endswith('%') and pd.api.types.is_numeric_dtype(out[c])]
-    for c in pct_cols:
-        s = out[c].astype(float)
-        vals = s.replace([np.inf, -np.inf], np.nan).dropna().abs()
-        if len(vals) == 0:
-            scale = 1.0
-        else:
-            maxv = vals.max()
-            scale = 100.0 if maxv <= 1.0 else (10.0 if maxv <= 10.0 else 1.0)
-        out[c] = (s * scale).map(lambda x: f"{x:.2f}%" if pd.notna(x) else "")
-
-    # Non-percent formatting
-    if tab_name == "Pitching":
-        # All remaining numeric (non-% columns) to 2 decimals
-        for c in out.columns:
-            if isinstance(c, str) and not c.endswith('%') and pd.api.types.is_numeric_dtype(out[c]):
-                out[c] = out[c].apply(lambda x: f"{x:.2f}" if pd.notna(x) else "")
-    else:
-        # Hitting non-% rate-like columns as .xxx
-        non_pct_rate_cols = [c for c in RATE_COLS.get(tab_name, []) if c in out.columns and not c.strip().endswith('%')]
-        for c in non_pct_rate_cols:
-            if pd.api.types.is_numeric_dtype(out[c]):
-                out[c] = out[c].apply(lambda x: (f"{x:.3f}" if pd.notna(x) else "")).str.replace("0.", ".", regex=False)
-
-    column_config = {}
-    return out, column_config
-
-# Data loading: cumulative -> read one file and let the prep funcs select columns
-
-def load_cumulative():
-    # Try exact file, then fallback to any *cumulative*.csv (case-insensitive)
-    df_all = None
-    candidates = [CUMULATIVE_FILE]
-    # Add common alt casings
-    candidates += list({
-        p for p in glob.glob("*.csv") if "cumulative" in os.path.basename(p).lower()
-    })
-    for path in candidates:
-        try:
-            df_all = pd.read_csv(path)
-            break
-        except Exception:
-            continue
-
-    if df_all is None or df_all.empty:
-        return {s: pd.DataFrame() for s in STAT_TYPES_ALL}
-
-    df_all = clean_df(df_all)
-
-    frames = {
-        "Hitting": prepare_batting_stats(df_all),
-        "Pitching": prepare_pitching_stats(df_all),
-        "Fielding": prepare_fielding_stats(df_all),
-        "Catching": prepare_catching_stats(df_all),
-    }
-    return frames
-
-# Data loading: series -> aggregate using existing funcs
-
-def load_series(stat_types, selected_series):
-    frames = {}
-    sel = selected_series or []
-    if "Hitting" in stat_types:
-        try:
-            _hit = aggregate_stats_hitting(sel)
-            frames["Hitting"] = prepare_batting_stats(generate_aggregated_hitting_df(_hit))
-        except Exception:
-            frames["Hitting"] = pd.DataFrame()
-    if "Pitching" in stat_types:
-        try:
-            _pit = aggregate_stats_pitching(sel)
-            frames["Pitching"] = prepare_pitching_stats(generate_aggregated_pitching_df(_pit))
-        except Exception:
-            frames["Pitching"] = pd.DataFrame()
-    if "Fielding" in stat_types:
-        try:
-            _fld = aggregate_stats_fielding(sel)
-            frames["Fielding"] = prepare_fielding_stats(_fld)
-        except Exception:
-            frames["Fielding"] = pd.DataFrame()
-    if "Catching" in stat_types:
-        try:
-            _cat = aggregate_stats_catching(sel)
-            frames["Catching"] = prepare_catching_stats(clean_df(_cat))
-        except Exception:
-            frames["Catching"] = pd.DataFrame()
-    return frames
-
-# Apply qualification mins (drop rows below thresholds)
-
-def filter_qualified_frames(frames, qual_mins):
+def filter_qualified_frames(frames: dict, mins: dict) -> dict:
     out = {}
-    for key, df in frames.items():
-        if df is None or df.empty:
-            out[key] = df
-            continue
-        dfx = df.copy()
-        if key == "Hitting" and "PA" in dfx.columns:
-            dfx = dfx[dfx["PA"] >= qual_mins.get("Hitting", 0)]
-        elif key == "Pitching" and "IP" in dfx.columns:
-            dfx = dfx[dfx["IP"] >= qual_mins.get("Pitching", 0)]
-        elif key == "Fielding" and "TC" in dfx.columns:
-            dfx = dfx[dfx["TC"] >= qual_mins.get("Fielding", 0)]
-        elif key == "Catching" and "INN" in dfx.columns:
-            dfx = dfx[dfx["INN"] >= qual_mins.get("Catching", 0)]
-        out[key] = dfx
+    df = frames.get("Hitting", pd.DataFrame()).copy()
+    if not df.empty and "PA" in df.columns:
+        pa = pd.to_numeric(df["PA"], errors="coerce").fillna(0)
+        out["Hitting"] = df[pa >= int(mins.get("Hitting", 1))].reset_index(drop=True)
+    else:
+        out["Hitting"] = df
+    df = frames.get("Pitching", pd.DataFrame()).copy()
+    if not df.empty and "BF" in df.columns:
+        bf = pd.to_numeric(df["BF"], errors="coerce").fillna(0)
+        out["Pitching"] = df[bf >= int(mins.get("Pitching", 1))].reset_index(drop=True)
+    else:
+        out["Pitching"] = df
+    df = frames.get("Fielding", pd.DataFrame()).copy()
+    if not df.empty and "TC" in df.columns:
+        tc = pd.to_numeric(df["TC"], errors="coerce").fillna(0)
+        out["Fielding"] = df[tc >= int(mins.get("Fielding", 1))].reset_index(drop=True)
+    else:
+        out["Fielding"] = df
+    df = frames.get("Catching", pd.DataFrame()).copy()
+    if not df.empty and "INN" in df.columns:
+        inn = pd.to_numeric(df["INN"], errors="coerce").fillna(0)
+        out["Catching"] = df[inn >= float(mins.get("Catching", 1))].reset_index(drop=True)
+    else:
+        out["Catching"] = df
     return out
 
-# =====================
-# NEW UI LAYOUT (same format/end product)
-# =====================
-st.set_page_config(page_title="EUCB Stats (Fall 2025)", layout="wide")
 
-st.title("EUCB Stats (Fall 2025)")
+
+# =====================================================
+# TOTALS ROW HELPERS
+
+def _parse_sb_att(value):
+    """
+    Parse catcher 'SB-ATT' strings like '5-5' (SB-ATT) into (sb_allowed, attempts).
+    Returns (sb_allowed, attempts) as floats. Handles None/NaN/empty gracefully.
+    Accepts dashes '-', '–', '—', with/without spaces.
+    """
+    try:
+        if pd.isna(value):
+            return 0.0, 0.0
+        s = str(value).strip()
+        if not s:
+            return 0.0, 0.0
+        s = s.replace("—", "-").replace("–", "-")
+        if "-" in s:
+            parts = [p.strip() for p in s.split("-", 1)]
+            if len(parts) == 2:
+                sb = float(pd.to_numeric(parts[0], errors="coerce"))
+                att = float(pd.to_numeric(parts[1], errors="coerce"))
+                sb = 0.0 if pd.isna(sb) else sb
+                att = 0.0 if pd.isna(att) else att
+                return sb, att
+        # If it's a single number, treat as attempts, 0 SB allowed
+        att = float(pd.to_numeric(s, errors="coerce"))
+        att = 0.0 if pd.isna(att) else att
+        return 0.0, att
+    except Exception:
+        return 0.0, 0.0
+
+# =====================================================
+def _dec_to_baseball_tenths(ip_dec: float) -> float:
+    """
+    Convert decimal innings back to baseball-tenths (e.g., 4 + 1/3 -> 4.1, 4 + 2/3 -> 4.2).
+    Returns a float like 7.2
+    """
+    try:
+        whole = int(np.floor(ip_dec))
+        frac = ip_dec - whole
+        # closest of 0, 1/3, 2/3
+        if abs(frac - 1/3) < 1e-6:
+            return whole + 0.1
+        elif abs(frac - 2/3) < 1e-6:
+            return whole + 0.2
+        else:
+            # round to nearest third
+            thirds = round(frac * 3)
+            if thirds == 1:
+                return whole + 0.1
+            elif thirds == 2:
+                return whole + 0.2
+            else:
+                return float(whole)
+    except Exception:
+        return float(ip_dec)
+
+def _append_totals_row_hitting(df: pd.DataFrame) -> pd.DataFrame:
+    if df.empty:
+        return df
+    tmp = df.copy()
+
+    # Convert numeric-like cols
+    for c in tmp.columns:
+        if c not in ("Last","First"):
+            tmp[c] = _to_num(tmp[c])
+
+    # Sum raw counts where available
+    get = lambda c: _to_num(tmp[c]).sum() if c in tmp.columns else 0.0
+    PA  = get("PA")
+    AB  = get("AB")
+    H   = get("H")
+    BB  = get("BB")
+    HBP = get("HBP")
+    SF  = get("SF")
+    TB  = get("TB")
+    R   = get("R")
+    RBI = get("RBI")
+    SO  = get("SO")
+    XBH = get("XBH")
+    _2B = get("2B")
+    _3B = get("3B")
+    HR  = get("HR")
+    SB  = get("SB")
+    CS  = get("CS")
+    QAB = get("QAB")
+    HHB = get("HHB")
+    LDc = get("LD")
+    FBc = get("FB")
+    GBc = get("GB")
+    H_RISP  = get("H_RISP")
+    AB_RISP = get("AB_RISP")
+    PS  = get("PS")
+    OUT2RBI = get("2OUTRBI")
+
+    # If LD/FB/GB counts not present, try reconstruct from % and BIP totals
+    BIP = AB - SO - HR + SF
+    if LDc == 0 and "LD%" in tmp.columns:
+        LDc = float(np.rint(_to_num(tmp["LD%"]).mean() * BIP)) if BIP > 0 else 0.0
+    if FBc == 0 and "FB%" in tmp.columns:
+        FBc = float(np.rint(_to_num(tmp["FB%"]).mean() * BIP)) if BIP > 0 else 0.0
+    if GBc == 0 and "GB%" in tmp.columns:
+        GBc = float(np.rint(_to_num(tmp["GB%"]).mean() * BIP)) if BIP > 0 else 0.0
+
+    # Recompute team rates
+    def sd(n,d):
+        return 0.0 if d == 0 else round(float(n)/float(d), 3)
+
+    AVG   = sd(H, AB)
+    OBP   = sd(H + BB + HBP, AB + BB + HBP + SF)
+    SLG   = sd(TB, AB)
+    OPS   = round(OBP + SLG, 3)
+    QABp  = sd(QAB, PA)
+    HHBp  = sd(HHB, AB if AB > 0 else PA)
+    LDp   = sd(LDc, (LDc + FBc + GBc))
+    FBp   = sd(FBc, (LDc + FBc + GBc))
+    GBp   = sd(GBc, (LDc + FBc + GBc))
+    BABIP = sd(H - HR, AB - SO - HR + SF)
+    BARISP= sd(H_RISP, AB_RISP)
+    PS_PA = sd(PS, PA)
+    BB_K  = 0.0 if SO == 0 else round(BB / SO, 3)
+    Cp    = sd(AB - SO, AB)
+
+    totals = {
+        "Last": "TOTAL", "First": "",
+        "PA": PA, "AB": AB, "AVG": AVG, "OBP": OBP, "OPS": OPS, "SLG": SLG, "H": H,
+        "R": R, "RBI": RBI, "BB": BB, "SO": SO, "XBH": XBH, "2B": _2B, "3B": _3B, "HR": HR,
+        "TB": TB, "SB": SB, "PS/PA": PS_PA, "BB/K": BB_K, "C%": Cp, "QAB": QAB, "QAB%": QABp,
+        "HHB": HHB, "HHB%": HHBp, "LD%": LDp, "FB%": FBp, "GB%": GBp, "BABIP": BABIP,
+        "BA/RISP": BARISP, "2OUTRBI": OUT2RBI
+    }
+
+    # Align totals dict to current df columns; fill missing keys with 0
+    row = {c: totals.get(c, 0.0 if c not in ("Last","First") else ("TOTAL" if c=="Last" else "")) for c in tmp.columns}
+    return pd.concat([tmp, pd.DataFrame([row])], ignore_index=True)
+
+def _append_totals_row_pitching(df: pd.DataFrame) -> pd.DataFrame:
+    if df.empty:
+        return df
+    tmp = df.copy()
+    for c in tmp.columns:
+        if c not in ("Last","First"):
+            tmp[c] = _to_num(tmp[c])
+
+    # Sum counts
+    get = lambda c: _to_num(tmp[c]).sum() if c in tmp.columns else 0.0
+    ER = get("ER"); H = get("H"); R = get("R"); BB = get("BB"); SO = get("SO")
+    HR = get("HR"); P = get("#P"); BF = get("BF"); HBP = get("HBP")
+    CS = get("CS"); SB = get("SB"); BBS = get("BBS")
+    Strikes = get("Strikes"); FPS = get("FirstPitchStrikes")
+    FPSO = get("FPSO"); FPSH = get("FPSH")
+    GB = get("GroundBalls"); FB = get("FlyBalls"); LD = get("LineDrives")
+    HHB = get("HardHitBalls"); WEAK = get("WeakContact"); U3 = get("Under3Pitches")
+    SM = get("SwingMisses")
+
+    # Sum IP as decimal-thirds
+    ip_dec = 0.0
+    if "IP" in tmp.columns:
+        ip_dec = float(_to_num(tmp["IP"]).apply(_convert_innings_value).sum())
+
+    BIP = max(BF - SO - BB - HBP, 0.0)
+
+    def sd(n,d):
+        return 0.0 if d == 0 else round(float(n)/float(d), 3)
+
+    ERA  = sd(ER * 9.0, ip_dec)
+    WHIP = sd(BB + H, ip_dec)
+    BB_INN = sd(BB, ip_dec)
+    FIP = round((sd(13*HR + 3*(BB + HBP) - 2*SO, ip_dec) + 3.1), 3)
+
+    S_pct   = sd(Strikes, P)
+    FPS_pct = sd(FPS, BF)
+    FPSO_pct= sd(FPSO, BF)
+    FPSH_pct= sd(FPSH, BF)
+    SM_pct  = sd(SM, P)
+    LD_pct  = sd(LD, BIP)
+    FB_pct  = sd(FB, BIP)
+    GB_pct  = sd(GB, BIP)
+    HHB_pct = sd(HHB, BIP)
+    WEAK_pct= sd(WEAK, BIP)
+    U3_pct  = sd(U3, BF)
+    SB_pct  = 0.0 if (SB + CS) == 0 else round(SB / (SB + CS), 3)
+    BAA     = sd(H, BF - BB - HBP)
+    BABIP   = sd(H - HR, BF - SO - HR - BB - HBP)
+
+    # Convert ip_dec to baseball-tenths style float
+    ip_disp = _dec_to_baseball_tenths(ip_dec)
+
+    totals = {
+        "Last": "TOTAL", "First": "",
+        "IP": ip_disp, "ERA": ERA, "WHIP": WHIP, "SO": SO, "K-L": get("K-L"), "H": H, "R": R, "ER": ER,
+        "BB": BB, "BB/INN": BB_INN, "FIP": FIP, "S%": S_pct, "FPS%": FPS_pct, "FPSO%": FPSO_pct, "FPSH%": FPSH_pct,
+        "BAA": BAA, "BBS": BBS, "SM%": SM_pct, "LD%": LD_pct, "FB%": FB_pct, "GB%": GB_pct, "BABIP": BABIP,
+        "BA/RISP": 0.0, "CS": CS, "SB": SB, "SB%": SB_pct, "<3%": U3_pct, "HHB%": HHB_pct, "WEAK%": WEAK_pct,
+        "#P": P, "BF": BF, "HBP": HBP
+    }
+    row = {c: totals.get(c, 0.0 if c not in ("Last","First") else ("TOTAL" if c=="Last" else "")) for c in tmp.columns}
+    return pd.concat([tmp, pd.DataFrame([row])], ignore_index=True)
+
+def _append_totals_row_fielding(df: pd.DataFrame) -> pd.DataFrame:
+    if df.empty:
+        return df
+    tmp = df.copy()
+    for c in tmp.columns:
+        if c not in ("Last","First"):
+            tmp[c] = _to_num(tmp[c])
+    get = lambda c: _to_num(tmp[c]).sum() if c in tmp.columns else 0.0
+    TC = get("TC"); PO = get("PO"); A = get("A"); E = get("E"); DP = get("DP")
+    FPCT = 0.0 if TC == 0 else round((PO + A) / TC, 3)
+    totals = {"Last":"TOTAL","First":"", "TC":TC,"PO":PO,"A":A,"E":E,"DP":DP,"FPCT":FPCT}
+    row = {c: totals.get(c, 0.0 if c not in ("Last","First") else ("TOTAL" if c=="Last" else "")) for c in tmp.columns}
+    return pd.concat([tmp, pd.DataFrame([row])], ignore_index=True)
+
+def _append_totals_row_catching(df: pd.DataFrame) -> pd.DataFrame:
+    if df.empty:
+        return df
+    tmp = df.copy()
+    for c in tmp.columns:
+        if c not in ("Last","First"):
+            tmp[c] = _to_num(tmp[c])
+    get = lambda c: _to_num(tmp[c]).sum() if c in tmp.columns else 0.0
+    INN = get("INN"); PB = get("PB"); SB_ATT = get("SB-ATT"); CS = get("CS")
+    CS_pct = 0.0 if SB_ATT == 0 else round(CS / SB_ATT, 3)
+    totals = {"Last":"TOTAL","First":"", "INN":INN,"PB":PB,"SB-ATT":SB_ATT,"CS":CS,"CS%":CS_pct}
+    row = {c: totals.get(c, 0.0 if c not in ("Last","First") else ("TOTAL" if c=="Last" else "")) for c in tmp.columns}
+    return pd.concat([tmp, pd.DataFrame([row])], ignore_index=True)
+
+def _append_totals(df: pd.DataFrame, tab_name: str) -> pd.DataFrame:
+    if tab_name == "Hitting":
+        return _append_totals_row_hitting(df)
+    if tab_name == "Pitching":
+        return _append_totals_row_pitching(df)
+    if tab_name == "Fielding":
+        return _append_totals_row_fielding(df)
+    if tab_name == "Catching":
+        return _append_totals_row_catching(df)
+    return df
+
+# =====================================================
+# UI LAYOUT (same format/end product)
+# =====================================================
+st.set_page_config(page_title="EUCB Team Stats (PBDB-Logic Build)", layout="wide")
+
+st.title("EUCB Team Stats (PBDB-Logic Build)")
+st.caption("Cumulative or Series-aggregated view with percent-columns backfilled to counts before combining, then rates recalculated.")
 
 with st.sidebar:
     st.header("Filters")
@@ -1051,7 +971,7 @@ with st.sidebar:
             "Series (choose one or many)",
             options=series_options,
             default=series_options[:1] if series_options else [],
-            help="Series correspond to CSV base names (e.g., wake, jmu, unc)."
+            help="Series correspond to CSV base names (e.g., wake, jmu)."
         )
 
 # Load per selection
@@ -1071,7 +991,6 @@ selected_players = st.multiselect(
     default=[],
 )
 
-# Tabs
 tabs_to_show = stat_types if stat_types else STAT_TYPES_ALL
 tabs = st.tabs(tabs_to_show)
 
