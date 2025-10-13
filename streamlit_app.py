@@ -632,6 +632,10 @@ def _format_series(df, tab_name):
             out[c] = pd.to_numeric(out[c], errors="coerce") * 1.0
             out[c] = out[c].map(lambda x: f"{x:.2f}%" if pd.notna(x) else "")
 
+    if tab_name == "Catching":
+        if "CS%" in out.columns:
+            out["CS%"] = out["CS%"].map(lambda x: f"{float(x):.2f}" if pd.notna(x) else "")
+    
     
     # Int-like columns per tab (display as ints)
     int_like_by_tab = {
