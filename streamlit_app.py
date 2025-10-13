@@ -540,38 +540,86 @@ def _pitching_ip_gt_zero(df):
     if "IP" not in df.columns: return df
     return df[df["IP"].fillna(0) > 0].copy()
 
-def _apply_display_formatting(df, tab_name):
-    if df is None or df.empty: return df, {}
+def _apply_display_formatting(df, tab_name, source_mode):
+    """
+    Presentation-only formatter. Keeps all math intact.
+    - source_mode: "Cumulative" | "Series" (controls % scaling)
+    """
+    if df is None or df.empty:
+        return df, {}
+
     out = df.copy()
 
-    is_cumulative = (
-        out.filter(like="%").apply(pd.to_numeric, errors="coerce").mean().mean() > 2
-        or out["Last"].astype(str).str.contains("TOTAL", case=False).any()
-    )
-    pct_cols = [c for c in out.columns if isinstance(c, str) and c.endswith("%")]
-    for c in pct_cols:
-        vals = pd.to_numeric(out[c], errors="coerce")
-        if not is_cumulative:
-            vals = vals * 100
-        out[c] = vals.map(lambda x: f"{x:.2f}%" if pd.notna(x) else "")
+    # ===== Helper: format .xxx with exactly 3 decimals, leading dot =====
+    def _dot3(x):
+        if pd.isna(x):
+            return ""
+        s = f"{float(x):.3f}"
+        # turn "0.500" -> ".500"  ; "-0.250" -> "-.250"
+        if s.startswith("0."):
+            s = "." + s[2:]
+        elif s.startswith("-0."):
+            s = "-." + s[3:]
+        return s
 
+    # ===== Percent columns =====
+    pct_cols = [c for c in out.columns if isinstance(c, str) and c.endswith("%")]
+
+    # Scale series percents (they’re ratios in your aggregated tables) to percentages
+    # For cumulative, leave as-is because they’re already in percent units in your dataset.
+    if source_mode == "Series":
+        for c in pct_cols:
+            out[c] = pd.to_numeric(out[c], errors="coerce") * 100.0
+    else:
+        for c in pct_cols:
+            out[c] = pd.to_numeric(out[c], errors="coerce")
+
+    # Render percents with 2 decimals and a % sign
+    for c in pct_cols:
+        out[c] = out[c].map(lambda x: f"{x:.2f}%" if pd.notna(x) else "")
+
+    # ===== Hitting special decimal rates (exactly 3 decimals, leading dot) =====
     if tab_name == "Hitting":
-        non_pct_rate_cols = [c for c in ["AVG","OBP","SLG","OPS","BABIP","BA/RISP"] if c in out.columns]
-        for c in non_pct_rate_cols:
-            if pd.api.types.is_numeric_dtype(out[c]):
-                out[c] = out[c].apply(
-                    lambda x: f".{str(x).split('.')[1][:3]}" if pd.notna(x) and x < 1
-                    else f"{x:.3f}" if pd.notna(x) else ""
-                )
+        for c in [col for col in ["AVG", "OBP", "SLG", "OPS", "BABIP", "BA/RISP", "PS/PA"] if c in out.columns]:
+            out[c] = out[c].map(_dot3)
+
+    # ===== Pitching specific formatting =====
+    if tab_name == "Pitching":
+        # ERA: always 2 decimals
+        if "ERA" in out.columns:
+            out["ERA"] = out["ERA"].map(lambda x: f"{float(x):.2f}" if pd.notna(x) else "")
+
+        # R and K-L as integers (no decimals)
+        for c in [col for col in ["R", "K-L"] if col in out.columns]:
+            out[c] = pd.to_numeric(out[c], errors="coerce").fillna(0).astype("Int64").astype(str).replace("<NA>", "")
+
+    # ===== Generic numeric formatting (leave ints as ints; others 3 decimals fixed) =====
+    # Identify int-like columns per tab that should never show decimals
+    int_like_by_tab = {
+        "Hitting":  ["PA","AB","H","R","RBI","BB","SO","2B","3B","HR","SB","QAB","XBH","TB","2OUTRBI","H_RISP","AB_RISP","HHB"],
+        "Pitching": ["H","R","ER","BB","SO","HR","BBS","CS","SB","K-L","BF","#P","HBP","GroundBalls","FlyBalls","LineDrives","HardHitBalls","WeakContact","Under3Pitches","SwingMisses"],
+        "Fielding": ["TC","A","PO","E","DP"],
+        "Catching": ["INN","PB","CS"],  # SB-ATT stays as text "SB-ATT"
+    }
+    int_like = set(int_like_by_tab.get(tab_name, []))
 
     for c in out.columns:
-        if c not in pct_cols and pd.api.types.is_numeric_dtype(out[c]):
-            out[c] = out[c].apply(lambda x: f"{x:.3f}".rstrip("0").rstrip(".") if pd.notna(x) else "")
+        if c in pct_cols:
+            continue  # already formatted
+        if c in int_like:
+            # Keep as integers
+            out[c] = pd.to_numeric(out[c], errors="coerce").fillna(0).astype("Int64").astype(str).replace("<NA>", "")
+        else:
+            # For everything else that is numeric and not already text, show up to 3 decimals (no stripping zeros)
+            if pd.api.types.is_numeric_dtype(out[c]):
+                out[c] = out[c].map(lambda x: f"{float(x):.3f}" if pd.notna(x) else "")
 
+    # ===== Bold totals row =====
     if "Last" in out.columns:
         def _bold(row):
-            return ["font-weight: bold" if str(row.get("Last","")).lower() in ["totals","total"] else "" for _ in row]
+            return ["font-weight: bold" if str(row.get("Last","")).strip().lower() in {"totals","total"} else "" for _ in row]
         out = out.style.apply(_bold, axis=1)
+
     return out, {}
 
 # =============================================================================
@@ -783,7 +831,8 @@ for tab_name, tab in zip(tabs_to_show, tabs):
                 st.info(f"No data for **{tab_name}** with current filters.")
             continue
 
-        df_display, column_config = _apply_display_formatting(df_filtered, tab_name)
+        df_display, column_config = _apply_display_formatting(df_filtered, tab_name, source_mode)
+
 
         st.subheader(f"{tab_name} Stats")
         st.dataframe(
