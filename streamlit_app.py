@@ -59,7 +59,6 @@ RATE_COLS = {
 
 # =============================================================================
 # 1) DOMAIN / LOGIC LAYER (UNCHANGED CALCULATIONS)
-#     -- Copied from your code with zero changes to logic
 # =============================================================================
 def clean_df(df):
     if "Last" in df.columns and "First" in df.columns:
@@ -490,17 +489,13 @@ def _append_totals(df, tab_name):
             if pd.api.types.is_numeric_dtype(base[c]): totals[c] = ssum(c)
 
     elif tab_name == "Pitching":
-        # Sum raw counting stats used by derived rates
         for raw in ["IP", "ER", "H", "BB", "HR", "SO", "BF", "HBP", "SB", "CS", "#P"]:
             if raw in base.columns:
                 totals[raw] = ssum(raw)
 
-        # Detect source: SERIES tables carry internal _* columns; CUMULATIVE does not
         is_series_like = any(col.startswith("_") for col in base.columns)
 
         if is_series_like:
-            # (Keep your recompute if you want; or average, your choice.
-            # Below keeps your recompute for series.)
             IP  = totals.get("IP", 0.0)
             ER  = totals.get("ER", 0.0)
             Hh  = totals.get("H",  0.0)
@@ -520,7 +515,6 @@ def _append_totals(df, tab_name):
             totals["BAA"]    = round(Hh / (BF - BBh - HBP), 3) if (BF - BBh - HBP) > 0 else 0
             totals["BABIP"]  = round((Hh - HRh) / (BF - SOh - HRh - BBh - HBP), 3) if (BF - SOh - HRh - BBh - HBP) > 0 else 0
         else:
-            # ✅ CUMULATIVE: just average the displayed rate columns to avoid the IP thirds issue
             for c in ["ERA", "WHIP", "BB/INN", "FIP"]:
                 if c in base.columns:
                     totals[c] = round(smean(c), 2)
@@ -530,13 +524,11 @@ def _append_totals(df, tab_name):
             if "SB%" in base.columns:
                 totals["SB%"] = round(smean("SB%"), 2)
 
-        # Simple average for every visible % column (skip NaNs)
         pct_cols = [c for c in base.columns if isinstance(c, str) and c.endswith("%")]
         for c in pct_cols:
             col = pd.to_numeric(base[c], errors="coerce")
             totals[c] = round(col.mean(skipna=True), 2) if len(col.dropna()) else 0.0
 
-        # For any other numeric columns not already set, use SUM
         for c in base.columns:
             if c in ["Last", "First"] or c in totals:
                 continue
@@ -577,216 +569,105 @@ def _pitching_ip_gt_zero(df):
     if "IP" not in df.columns: return df
     return df[df["IP"].fillna(0) > 0].copy()
 
+# =============================================================================
+# 1b) DISPLAY HELPERS TO KEEP NUMERIC TYPES AND STILL FORMAT
+# =============================================================================
+def _leading_dot3(x):
+    """Render .xxx for 0<=x<1 and -.xxx for -1<x<0, else 0.000 style with 3 decimals."""
+    if pd.isna(x):
+        return ""
+    try:
+        v = float(x)
+    except Exception:
+        return ""
+    s = f"{v:.3f}"
+    if 0 <= v < 1:
+        return "." + s[2:]
+    if -1 < v < 0:
+        return "-." + s[3:]
+    return s
 
-def _format_series(df, tab_name):
-    """
-    SERIES VIEW formatter (aggregated series → ratios for % need *100).
-    - Scale % columns by 100, render with 2 decimals + '%'
-    - Hitting rates as .xxx with 3 decimals
-    - Pitching ERA always 2 decimals; R and K-L as ints
-    - Other numerics: 3 fixed decimals (no stripping)
-    """
-    if df is None or df.empty:
-        return df, {}
+def _build_column_config(tab_name, df, cumulative=False):
+    cfg = {}
 
-    out = df.copy()
+    def ends_pct(cols): return [c for c in cols if isinstance(c, str) and c.endswith("%")]
 
-    # Helpers
-    def _dot3(x):
-        if x is None or (isinstance(x, str) and not x.strip()):
-            return ""
-        # try to parse tolerant of commas/percent signs
-        try:
-            v = float(str(x).replace(",", "").replace("%", ""))
-        except Exception:
-            return ""  # anything non-numeric becomes blank
-    
-        s = f"{v:.3f}"
-        if 0 <= v < 1:     # 0.500 -> .500
-            s = "." + s[2:]
-        elif -1 < v < 0:   # -0.250 -> -.250
-            s = "-." + s[3:]
-        return s
+    pct_cols = ends_pct(df.columns)
 
-
- 
-
-    pct_cols = [c for c in out.columns if isinstance(c, str) and c.endswith("%")]
-
-
-    # Hitting decimals as .xxx with 3 places
+    # Hitting rate columns: show .xxx
     if tab_name == "Hitting":
-        for c in [k for k in ["AVG","OBP","SLG","OPS","BABIP","BA/RISP","PS/PA"] if k in out.columns]:
-            out[c] = out[c].map(_dot3)
-        for c in pct_cols:
-            out[c] = pd.to_numeric(out[c], errors="coerce") * 100.0
-            out[c] = out[c].map(lambda x: f"{x:.2f}%" if pd.notna(x) else "")
+        for c in [k for k in ["AVG","OBP","SLG","OPS","BABIP","BA/RISP","PS/PA"] if k in df.columns]:
+            cfg[c] = st.column_config.NumberColumn(c, format="%.3f", step=0.001)
 
-    # Pitching specifics
+        # Percent columns in Hitting are stored as ratios 0-1
+        for c in [k for k in ["QAB%","C%","HHB%","LD%","FB%","GB%"] if k in df.columns]:
+            # Use percent format that multiplies the underlying ratio
+            cfg[c] = st.column_config.NumberColumn(c, format="%.2f%%", step=0.01)
+
     if tab_name == "Pitching":
-        if "ERA" in out.columns:
-            out["ERA"] = out["ERA"].map(lambda x: f"{float(x):.2f}" if pd.notna(x) else "")
-        if "IP" in out.columns:
-            out["IP"] = out["IP"].map(lambda x: f"{float(x):.2f}" if pd.notna(x) else "")
-        if "WHIP" in out.columns:
-            out["WHIP"] = out["WHIP"].map(lambda x: f"{float(x):.2f}" if pd.notna(x) else "")
-        if "BB/INN" in out.columns:
-            out["BB/INN"] = out["BB/INN"].map(lambda x: f"{float(x):.2f}" if pd.notna(x) else "")
-
-        for c in [k for k in ["R","K-L"] if k in out.columns]:
-            out[c] = (
-                pd.to_numeric(out[c], errors="coerce")
-                  .replace([np.inf, -np.inf], np.nan)  # kill inf/-inf from div-by-zero, etc.
-                  .round(0)                            # make any 2.5 → 3, etc., so Int64 is safe
-                  .fillna(0)
-                  .astype("Int64")
-                  .astype(str)
-                  .replace("<NA>", "")
-            )
-        for c in pct_cols:
-            out[c] = pd.to_numeric(out[c], errors="coerce") * 1.0
-            out[c] = out[c].map(lambda x: f"{x:.2f}%" if pd.notna(x) else "")
+        # Core rate cols
+        for c in [k for k in ["ERA","IP","WHIP","BB/INN"] if k in df.columns]:
+            cfg[c] = st.column_config.NumberColumn(c, format="%.2f", step=0.01)
+        # Three-decimal BA/RISP, BABIP, BAA
+        for c in [k for k in ["BA/RISP","BABIP","BAA"] if k in df.columns]:
+            cfg[c] = st.column_config.NumberColumn(c, format="%.3f", step=0.001)
+        # Percent columns in Pitching are stored as 0-100 units
+        for c in [k for k in pct_cols if k not in ["BA/RISP"]]:
+            cfg[c] = st.column_config.NumberColumn(c, format="%.2f%%", step=0.01)
 
     if tab_name == "Catching":
-        if "CS%" in out.columns:
-            out["CS%"] = out["CS%"].map(lambda x: f"{float(x):.2f}" if pd.notna(x) else "")
-    
-    
-    # Int-like columns per tab (display as ints)
-    int_like_by_tab = {
-        "Hitting":  ["PA","AB","H","R","RBI","BB","SO","2B","3B","HR","SB","QAB","XBH","TB","2OUTRBI","H_RISP","AB_RISP","HHB"],
-        "Pitching": ["H","R","ER","BB","SO","HR","BBS","CS","SB","K-L","BF","#P","HBP",
-                     "GroundBalls","FlyBalls","LineDrives","HardHitBalls","WeakContact","Under3Pitches","SwingMisses"],
-        "Fielding": ["TC","A","PO","E","DP"],
-        "Catching": ["INN","PB","CS"],  # SB-ATT stays text
-    }
-    int_like = set(int_like_by_tab.get(tab_name, []))
+        if "CS%" in df.columns:
+            cfg["CS%"] = st.column_config.NumberColumn("CS%", format="%.2f%%", step=0.01)
 
-    for c in out.columns:
-        if c in pct_cols:
-            continue
-        if c in int_like:
-            #out[c] = pd.to_numeric(out[c], errors="coerce").fillna(0).astype("Int64").astype(str).replace("<NA>", "")
-            out[c] = (
-                pd.to_numeric(out[c], errors="coerce")
-                  .replace([np.inf, -np.inf], np.nan)  # kill inf/-inf from div-by-zero, etc.
-                  .round(0)                            # make any 2.5 → 3, etc., so Int64 is safe
-                  .fillna(0)
-                  .astype("Int64")
-                  .astype(str)
-                  .replace("<NA>", "")
-            )
-        else:
-            if pd.api.types.is_numeric_dtype(out[c]):
-                out[c] = out[c].map(lambda x: f"{float(x):.3f}" if pd.notna(x) else "")
+    # Fielding: FPCT is ratio .xxx as number format
+    if tab_name == "Fielding":
+        if "FPCT" in df.columns:
+            cfg["FPCT"] = st.column_config.NumberColumn("FPCT", format="%.3f", step=0.001)
 
-    # Bold totals row
-    if "Last" in out.columns:
-        def _bold(row):
-            return ["font-weight: bold" if str(row.get("Last","")).strip().lower() in {"totals","total"} else "" for _ in row]
-        out = out.style.apply(_bold, axis=1)
+    return cfg
 
-    return out, {}
+def _apply_totals_bold(styler):
+    def _bold(row):
+        is_total = str(row.get("Last","")).strip().lower() in {"totals","total"}
+        return ["font-weight: bold" if is_total else "" for _ in row]
+    return styler.apply(_bold, axis=1)
 
-
-
-def _format_cumulative(df, tab_name):
-    """
-    CUMULATIVE VIEW formatter (cumulative.csv → % already in percent units).
-    - Do NOT scale % columns; just render with 2 decimals + '%'
-    - Hitting rates as .xxx with 3 decimals
-    - Pitching ERA always 2 decimals; R and K-L as ints
-    - Other numerics: 3 fixed decimals (no stripping)
-    """
-    if df is None or df.empty:
-        return df, {}
-
-    out = df.copy()
-
-    def _dot3(x):
-        if pd.isna(x):
-            return ""
-        s = f"{float(x):.3f}"
-        if s.startswith("0."):
-            return "." + s[2:]
-        if s.startswith("-0."):
-            return "-." + s[3:]
-        return s
-
-    pct_cols = [c for c in out.columns if isinstance(c, str) and c.endswith("%")]
-
-    # CUMULATIVE: already percent → format only
-    for c in pct_cols:
-        out[c] = pd.to_numeric(out[c], errors="coerce")
-        out[c] = out[c].map(lambda x: f"{x:.2f}%" if pd.notna(x) else "")
-
+def _apply_formats(styler, tab_name, cumulative=False):
+    # Hitting: render .xxx for listed rate columns
     if tab_name == "Hitting":
-        for c in [k for k in ["AVG","OBP","SLG","OPS","BABIP","BA/RISP","PS/PA"] if k in out.columns]:
-            out[c] = out[c].map(_dot3)
+        cols = [c for c in ["AVG","OBP","SLG","OPS","BABIP","BA/RISP","PS/PA"] if c in styler.data.columns]
+        if cols:
+            styler = styler.format({c: _leading_dot3 for c in cols})
+        # Percent columns as ratios → show as 12.34%
+        for c in [k for k in ["QAB%","C%","HHB%","LD%","FB%","GB%"] if k in styler.data.columns]:
+            styler = styler.format({c: "{:.2%}".format})
 
     if tab_name == "Pitching":
-        if "ERA" in out.columns:
-            out["ERA"] = out["ERA"].map(lambda x: f"{float(x):.2f}" if pd.notna(x) else "")
-        if "IP" in out.columns:
-            out["IP"] = out["IP"].map(lambda x: f"{float(x):.2f}" if pd.notna(x) else "")
-        if "WHIP" in out.columns:
-            out["WHIP"] = out["WHIP"].map(lambda x: f"{float(x):.2f}" if pd.notna(x) else "")
-        if "BB/INN" in out.columns:
-            out["BB/INN"] = out["BB/INN"].map(lambda x: f"{float(x):.2f}" if pd.notna(x) else "")
-        if "BA/RISP" in out.columns:
-            out["BA/RISP"] = out["BA/RISP"].map(lambda x: f"{float(x):.3f}" if pd.notna(x) else "")
-        
-        for c in [k for k in ["R","K-L"] if k in out.columns]:
-            out[c] = (
-                pd.to_numeric(out[c], errors="coerce")
-                  .replace([np.inf, -np.inf], np.nan)  # kill inf/-inf from div-by-zero, etc.
-                  .round(0)                            # make any 2.5 → 3, etc., so Int64 is safe
-                  .fillna(0)
-                  .astype("Int64")
-                  .astype(str)
-                  .replace("<NA>", "")
-            )
-    int_like_by_tab = {
-        "Hitting":  ["PA","AB","H","R","RBI","BB","SO","2B","3B","HR","SB","QAB","XBH","TB","2OUTRBI","H_RISP","AB_RISP","HHB"],
-        "Pitching": ["H","R","ER","BB","SO","HR","BBS","CS","SB","K-L","BF","#P","HBP",
-                     "GroundBalls","FlyBalls","LineDrives","HardHitBalls","WeakContact","Under3Pitches","SwingMisses"],
-        "Fielding": ["TC","A","PO","E","DP"],
-        "Catching": ["INN","PB","CS"],
-    }
-    int_like = set(int_like_by_tab.get(tab_name, []))
+        # Two-decimal numeric formats for core
+        for c in [k for k in ["ERA","IP","WHIP","BB/INN"] if k in styler.data.columns]:
+            styler = styler.format({c: "{:.2f}".format})
+        # Three-decimal batting averages
+        for c in [k for k in ["BA/RISP","BABIP","BAA"] if k in styler.data.columns]:
+            styler = styler.format({c: "{:.3f}".format})
+        # Percent columns are in 0-100 units → 12.34%
+        pct_cols = [c for c in styler.data.columns if isinstance(c, str) and c.endswith("%")]
+        # BA/RISP is not percent
+        pct_cols = [c for c in pct_cols if c not in ["BA/RISP"]]
+        for c in pct_cols:
+            styler = styler.format({c: "{:.2f}%".format})
 
-    for c in out.columns:
-        if c in pct_cols:
-            continue
-        if c in int_like:
-            out[c] = (
-                pd.to_numeric(out[c], errors="coerce")
-                  .replace([np.inf, -np.inf], np.nan)  # kill inf/-inf from div-by-zero, etc.
-                  .round(0)                            # make any 2.5 → 3, etc., so Int64 is safe
-                  .fillna(0)
-                  .astype("Int64")
-                  .astype(str)
-                  .replace("<NA>", "")
-            )
-        else:
-            if pd.api.types.is_numeric_dtype(out[c]):
-                out[c] = out[c].map(lambda x: f"{float(x):.3f}" if pd.notna(x) else "")
+    if tab_name == "Catching":
+        if "CS%" in styler.data.columns:
+            styler = styler.format({"CS%": "{:.2f}%".format})
 
-    if "Last" in out.columns:
-        def _bold(row):
-            return ["font-weight: bold" if str(row.get("Last","")).strip().lower() in {"totals","total"} else "" for _ in row]
-        out = out.style.apply(_bold, axis=1)
+    if tab_name == "Fielding":
+        if "FPCT" in styler.data.columns:
+            styler = styler.format({"FPCT": _leading_dot3})
 
-    return out, {}
-
-
-
-
-
+    return styler
 
 # =============================================================================
 # 2) DATA-SOURCE ADAPTERS
-#     One place to change how data gets loaded/normalized per source
 # =============================================================================
 def list_series_csvs():
     names = []
@@ -813,8 +694,7 @@ def _read_cumulative_csv():
     return pd.DataFrame()
 
 # =============================================================================
-# 3) STAT-TYPE PIPELINES (single place each stat is built for BOTH sources)
-#     - Each returns a ready-to-display DataFrame for that stat type.
+# 3) STAT-TYPE PIPELINES
 # =============================================================================
 def build_hitting_from_cumulative(raw_all):
     return prepare_batting_stats(raw_all)
@@ -848,7 +728,6 @@ def build_catching_from_series(selected):
     _cat = aggregate_stats_catching(selected)
     return prepare_catching_stats(clean_df(_cat))
 
-# A single registry that defines how to build each table per source.
 BUILDERS = {
     "Cumulative": {
         "Hitting":  build_hitting_from_cumulative,
@@ -865,7 +744,7 @@ BUILDERS = {
 }
 
 # =============================================================================
-# 4) UNIFIED PIPELINE APIS (source-agnostic)
+# 4) UNIFIED PIPELINE APIS
 # =============================================================================
 def get_frames_from_cumulative(stat_types):
     raw_all = _read_cumulative_csv()
@@ -877,7 +756,7 @@ def get_frames_from_cumulative(stat_types):
 
 def get_frames_from_series(stat_types, selected_series):
     frames = {s: BUILDERS["Series"][s](selected_series) for s in stat_types}
-    return frames  # series path already filters pitching IP; others same as your code
+    return frames
 
 def _apply_qual_mins(frames):
     out = {}
@@ -942,7 +821,7 @@ with st.sidebar:
             help="Series correspond to CSV base names (e.g., wake, jmu, unc)."
         )
 
-# Load frames in a single call through the unified pipeline
+# Load frames
 if source_mode == "Cumulative":
     frames = get_frames_from_cumulative(stat_types if stat_types else STAT_TYPES_ALL)
 else:
@@ -971,10 +850,10 @@ for tab_name, tab in zip(tabs_to_show, tabs):
         df_filtered = filter_players(df, selected_players)
         df_filtered = _drop_rows_nan_names(df_filtered)
 
-        # Append totals row prior to formatting (same logic)
+        # Append totals before display
         df_filtered = _append_totals(df_filtered, tab_name)
 
-        # Optional IP>0 guard for Pitching after user filtering (same as your code)
+        # Optional IP>0 guard for Pitching after user filtering
         if selected_players and tab_name == "Pitching":
             df_before = len(df_filtered)
             df_filtered = _pitching_ip_gt_zero(df_filtered)
@@ -986,11 +865,10 @@ for tab_name, tab in zip(tabs_to_show, tabs):
                 )
                 continue
 
+        # Hide a few columns in Pitching if desired
         if tab_name == "Pitching":
             df_filtered = df_filtered.drop(columns=[c for c in ["FIP", "SB%", "BA/RISP"] if c in df_filtered.columns])
 
-
-        
         if df_filtered.empty:
             if selected_players:
                 st.warning(f"No **{tab_name}** rows match selected player(s).")
@@ -998,18 +876,18 @@ for tab_name, tab in zip(tabs_to_show, tabs):
                 st.info(f"No data for **{tab_name}** with current filters.")
             continue
 
-        if source_mode == "Series":
-            df_display, column_config = _format_series(df_filtered, tab_name)
-        else:
-            df_display, column_config = _format_cumulative(df_filtered, tab_name)
+        # Build column config for numeric render
+        column_config = _build_column_config(tab_name, df_filtered, cumulative=(source_mode=="Cumulative"))
 
-
+        # Use Styler to format while preserving numeric dtypes
+        styler = pd.io.formats.style.Styler(df_filtered, hide_index=True)
+        styler = _apply_totals_bold(styler)
+        styler = _apply_formats(styler, tab_name, cumulative=(source_mode=="Cumulative"))
 
         st.subheader(f"{tab_name} Stats")
         st.dataframe(
-            df_display,
+            styler,
             use_container_width=True,
-            hide_index=True,
             column_config=column_config
         )
 
