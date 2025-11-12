@@ -876,19 +876,28 @@ for tab_name, tab in zip(tabs_to_show, tabs):
                 st.info(f"No data for **{tab_name}** with current filters.")
             continue
 
-        # Build column config for numeric render
+      # Build column config for numeric render
         column_config = _build_column_config(tab_name, df_filtered, cumulative=(source_mode=="Cumulative"))
-
+        
         # Use Styler to format while preserving numeric dtypes
-        styler = pd.io.formats.style.Styler(df_filtered, hide_index=True)
+        styler = df_filtered.style
         styler = _apply_totals_bold(styler)
         styler = _apply_formats(styler, tab_name, cumulative=(source_mode=="Cumulative"))
-
+        
+        # Hide index in a version-safe way
+        try:
+            styler = styler.hide(axis="index")       # pandas 1.4+
+        except Exception:
+            try:
+                styler = styler.hide_index()         # older pandas
+            except Exception:
+                pass
+        
         st.subheader(f"{tab_name} Stats")
         st.dataframe(
             styler,
             use_container_width=True,
-            column_config=column_config
+            column_config=column_config,
         )
 
         if tab_name == "Hitting":
