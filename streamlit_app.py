@@ -607,75 +607,110 @@ def _pitching_ip_gt_zero(df: pd.DataFrame) -> pd.DataFrame:
 # FORMATTERS FOR SERIES AND CUMULATIVE
 # -------------------------------------------------------------------
 def _format_series(df: pd.DataFrame, tab_name: str):
-    """Format series view stats into display strings and bold totals."""
+    """Format series view stats via Styler.format without breaking numeric sort."""
     if df is None or df.empty:
         return df, {}
+
     out = df.copy()
     pct_cols = [c for c in out.columns if isinstance(c, str) and c.endswith("%")]
+    int_like = set(INT_LIKE_BY_TAB.get(tab_name, []))
+    format_dict = {}
+
+    # Hitting rate stats as .xxx
     if tab_name == "Hitting":
-        for c in [k for k in ["AVG","OBP","SLG","OPS","BABIP","BA/RISP","PS/PA"] if k in out.columns]:
-            out[c] = out[c].map(_dot3)
-        for c in pct_cols:
-            out[c] = pd.to_numeric(out[c], errors="coerce") * 100.0
-            out[c] = out[c].map(lambda x: f"{x:.2f}%" if pd.notna(x) else "")
-    if tab_name == "Pitching":
-        for c in ["ERA","IP","WHIP","BB/INN"]:
+        for c in ["AVG", "OBP", "SLG", "OPS", "BABIP", "BA/RISP", "PS/PA"]:
             if c in out.columns:
-                out[c] = out[c].map(lambda x: f"{float(x):.2f}" if pd.notna(x) else "")
-        for c in [k for k in ["R","K-L"] if k in out.columns]:
-            out[c] = _int_str(out[c])
+                format_dict[c] = lambda x, _f=_dot3: "" if pd.isna(x) else _f(x)
+        # Percent columns are stored as fractions (0–1) in series path
         for c in pct_cols:
-            out[c] = pd.to_numeric(out[c], errors="coerce")
-            out[c] = out[c].map(lambda x: f"{x:.2f}%" if pd.notna(x) else "")
+            if c in out.columns:
+                format_dict[c] = lambda x: "" if pd.isna(x) else f"{x * 100:.2f}%"
+
+    # Pitching special formats
+    if tab_name == "Pitching":
+        for c in ["ERA", "IP", "WHIP", "BB/INN"]:
+            if c in out.columns:
+                format_dict[c] = lambda x: "" if pd.isna(x) else f"{float(x):.2f}"
+        # R and K-L as integers
+        for c in ["R", "K-L"]:
+            if c in out.columns:
+                format_dict[c] = lambda x: "" if pd.isna(x) else f"{int(round(x))}"
+        # Percent columns are already 0–100 in series path
+        for c in pct_cols:
+            if c in out.columns:
+                format_dict[c] = lambda x: "" if pd.isna(x) else f"{float(x):.2f}%"
+
+    # Catching CS% as 2 decimal number (no percent sign)
     if tab_name == "Catching" and "CS%" in out.columns:
-        out["CS%"] = out["CS%"].map(lambda x: f"{float(x):.2f}" if pd.notna(x) else "")
+        format_dict["CS%"] = lambda x: "" if pd.isna(x) else f"{float(x):.2f}"
 
-    int_like = set(INT_LIKE_BY_TAB.get(tab_name, []))
+    # Int-like columns for this tab
+    for c in int_like:
+        if c in out.columns and c not in format_dict:
+            format_dict[c] = lambda x: "" if pd.isna(x) else f"{int(round(x))}"
+
+    # Default numeric formatting for all other numeric columns
     for c in out.columns:
-        if c in pct_cols:
+        if c in format_dict:
             continue
-        if c in int_like:
-            out[c] = _int_str(out[c])
-        elif pd.api.types.is_numeric_dtype(out[c]):
-            out[c] = out[c].map(lambda x: f"{float(x):.3f}" if pd.notna(x) else "")
+        if pd.api.types.is_numeric_dtype(out[c]):
+            format_dict[c] = lambda x: "" if pd.isna(x) else f"{float(x):.3f}"
 
+    styled = out.style.format(format_dict)
     if "Last" in out.columns:
-        out = out.style.apply(_bold_totals(out), axis=1)
-    return out, {}
+        styled = styled.apply(_bold_totals(out), axis=1)
 
+    return styled, {}
+    
 def _format_cumulative(df: pd.DataFrame, tab_name: str):
-    """Format cumulative season stats into display strings and bold totals."""
+    """Format cumulative season stats via Styler.format without breaking numeric sort."""
     if df is None or df.empty:
         return df, {}
+
     out = df.copy()
     pct_cols = [c for c in out.columns if isinstance(c, str) and c.endswith("%")]
-    for c in pct_cols:
-        out[c] = pd.to_numeric(out[c], errors="coerce")
-        out[c] = out[c].map(lambda x: f"{x:.2f}%" if pd.notna(x) else "")
-    if tab_name == "Hitting":
-        for c in [k for k in ["AVG","OBP","SLG","OPS","BABIP","BA/RISP","PS/PA"] if k in out.columns]:
-            out[c] = out[c].map(_dot3)
-    if tab_name == "Pitching":
-        for c in ["ERA","IP","WHIP","BB/INN"]:
-            if c in out.columns:
-                out[c] = out[c].map(lambda x: f"{float(x):.2f}" if pd.notna(x) else "")
-        if "BA/RISP" in out.columns:
-            out["BA/RISP"] = out["BA/RISP"].map(lambda x: f"{float(x):.3f}" if pd.notna(x) else "")
-        for c in [k for k in ["R","K-L"] if k in out.columns]:
-            out[c] = _int_str(out[c])
-
     int_like = set(INT_LIKE_BY_TAB.get(tab_name, []))
-    for c in out.columns:
-        if c in pct_cols:
-            continue
-        if c in int_like:
-            out[c] = _int_str(out[c])
-        elif pd.api.types.is_numeric_dtype(out[c]):
-            out[c] = out[c].map(lambda x: f"{float(x):.3f}" if pd.notna(x) else "")
+    format_dict = {}
 
+    # Percent columns already stored as 0–100 in cumulative
+    for c in pct_cols:
+        if c in out.columns:
+            format_dict[c] = lambda x: "" if pd.isna(x) else f"{float(x):.2f}%"
+
+    # Hitting rate stats as .xxx
+    if tab_name == "Hitting":
+        for c in ["AVG", "OBP", "SLG", "OPS", "BABIP", "BA/RISP", "PS/PA"]:
+            if c in out.columns:
+                format_dict[c] = lambda x, _f=_dot3: "" if pd.isna(x) else _f(x)
+
+    # Pitching special formats
+    if tab_name == "Pitching":
+        for c in ["ERA", "IP", "WHIP", "BB/INN"]:
+            if c in out.columns:
+                format_dict[c] = lambda x: "" if pd.isna(x) else f"{float(x):.2f}"
+        if "BA/RISP" in out.columns:
+            format_dict["BA/RISP"] = lambda x: "" if pd.isna(x) else f"{float(x):.3f}"
+        for c in ["R", "K-L"]:
+            if c in out.columns:
+                format_dict[c] = lambda x: "" if pd.isna(x) else f"{int(round(x))}"
+
+    # Int-like columns for this tab
+    for c in int_like:
+        if c in out.columns and c not in format_dict:
+            format_dict[c] = lambda x: "" if pd.isna(x) else f"{int(round(x))}"
+
+    # Default numeric formatting for all other numeric columns
+    for c in out.columns:
+        if c in format_dict:
+            continue
+        if pd.api.types.is_numeric_dtype(out[c]):
+            format_dict[c] = lambda x: "" if pd.isna(x) else f"{float(x):.3f}"
+
+    styled = out.style.format(format_dict)
     if "Last" in out.columns:
-        out = out.style.apply(_bold_totals(out), axis=1)
-    return out, {}
+        styled = styled.apply(_bold_totals(out), axis=1)
+
+    return styled, {}
 
 # -------------------------------------------------------------------
 # DATA SOURCE ADAPTERS AND PIPELINES
