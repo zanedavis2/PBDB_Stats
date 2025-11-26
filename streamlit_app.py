@@ -583,7 +583,7 @@ def _format_series(df, tab_name):
     SERIES VIEW formatter (aggregated series -> ratios for % need *100).
     - Keep underlying data numeric for correct sorting/filtering.
     - Scale % columns by 100 for display where appropriate.
-    - Use Styler.format for visual formatting instead of overwriting data.
+    - Use Styler.format with safe callables.
     """
     if df is None or df.empty:
         return df, {}
@@ -597,13 +597,34 @@ def _format_series(df, tab_name):
         try:
             v = float(str(x).replace(",", "").replace("%", ""))
         except Exception:
-            return ""
+            return str(x)
         s = f"{v:.3f}"
         if 0 <= v < 1:
             s = "." + s[2:]
         elif -1 < v < 0:
             s = "-." + s[3:]
         return s
+
+    def _fmt_float(decimals, suffix=""):
+        fmt = f"{{:.{decimals}f}}"
+        def inner(x):
+            if x is None or (isinstance(x, str) and not x.strip()):
+                return ""
+            try:
+                v = float(str(x).replace(",", "").replace("%", ""))
+            except Exception:
+                return str(x)
+            return fmt.format(v) + suffix
+        return inner
+
+    def _fmt_int(x):
+        if x is None or (isinstance(x, str) and not x.strip()):
+            return ""
+        try:
+            v = float(str(x).replace(",", "").replace("%", ""))
+        except Exception:
+            return str(x)
+        return str(int(round(v)))
 
     pct_cols = [c for c in out.columns if isinstance(c, str) and c.endswith("%")]
 
@@ -619,12 +640,10 @@ def _format_series(df, tab_name):
     }
     int_like = set(int_like_by_tab.get(tab_name, []))
 
-    # SERIES: percent columns stored as ratios for Hitting, so scale to 0-100.
+    # SERIES: percent columns stored as ratios for Hitting, so scale for display
     if tab_name == "Hitting":
         for c in pct_cols:
             out[c] = pd.to_numeric(out[c], errors="coerce") * 100.0
-
-    # Pitching and Catching: no special scaling beyond what upstream already did.
 
     # Build Styler
     styler = out.style
@@ -638,7 +657,6 @@ def _format_series(df, tab_name):
             return ["" for _ in row]
         styler = styler.apply(_bold, axis=1)
 
-    # Build formatting dictionary
     fmt_dict = {}
 
     # Hitting special rate formatting as .xxx
@@ -651,24 +669,22 @@ def _format_series(df, tab_name):
     if tab_name == "Pitching":
         for c in ["ERA","IP","WHIP","BB/INN"]:
             if c in out.columns:
-                fmt_dict[c] = "{:.2f}"
+                fmt_dict[c] = _fmt_float(2)
 
-    # Catching special for CS% in Series: numeric with two decimals (no % sign)
+    # Catching special for CS% in Series: numeric with two decimals (no percent sign)
     if tab_name == "Catching" and "CS%" in out.columns:
-        fmt_dict["CS%"] = "{:.2f}"
+        fmt_dict["CS%"] = _fmt_float(2)
 
     # Percent columns overall
     for c in pct_cols:
         if tab_name == "Catching" and c == "CS%":
-            # Already handled above, no percent sign
             continue
-        # For Hitting we scaled to 0-100, for others it should already be in percent units
-        fmt_dict.setdefault(c, "{:.2f}%")
+        fmt_dict.setdefault(c, _fmt_float(2, suffix="%"))
 
     # Int-like columns display as integers
     for c in int_like:
         if c in out.columns:
-            fmt_dict.setdefault(c, "{:.0f}")
+            fmt_dict.setdefault(c, _fmt_int)
 
     # All other numeric columns: 3 decimal places
     for c in out.columns:
@@ -677,7 +693,7 @@ def _format_series(df, tab_name):
         if c in pct_cols:
             continue
         if pd.api.types.is_numeric_dtype(out[c]):
-            fmt_dict[c] = "{:.3f}"
+            fmt_dict[c] = _fmt_float(3)
 
     styler = styler.format(fmt_dict, na_rep="")
 
@@ -690,7 +706,7 @@ def _format_cumulative(df, tab_name):
     CUMULATIVE VIEW formatter (cumulative.csv -> % already in percent units).
     - Keep underlying data numeric for correct sorting/filtering.
     - Do not rescale percent columns, only format them.
-    - Use Styler.format for visual formatting instead of overwriting data.
+    - Use Styler.format with safe callables.
     """
     if df is None or df.empty:
         return df, {}
@@ -701,15 +717,36 @@ def _format_cumulative(df, tab_name):
         if pd.isna(x):
             return ""
         try:
-            v = float(x)
+            v = float(str(x).replace(",", "").replace("%", ""))
         except Exception:
-            return ""
+            return str(x)
         s = f"{v:.3f}"
         if s.startswith("0."):
             return "." + s[2:]
         if s.startswith("-0."):
             return "-." + s[3:]
         return s
+
+    def _fmt_float(decimals, suffix=""):
+        fmt = f"{{:.{decimals}f}}"
+        def inner(x):
+            if x is None or (isinstance(x, str) and not x.strip()):
+                return ""
+            try:
+                v = float(str(x).replace(",", "").replace("%", ""))
+            except Exception:
+                return str(x)
+            return fmt.format(v) + suffix
+        return inner
+
+    def _fmt_int(x):
+        if x is None or (isinstance(x, str) and not x.strip()):
+            return ""
+        try:
+            v = float(str(x).replace(",", "").replace("%", ""))
+        except Exception:
+            return str(x)
+        return str(int(round(v)))
 
     pct_cols = [c for c in out.columns if isinstance(c, str) and c.endswith("%")]
 
@@ -748,18 +785,18 @@ def _format_cumulative(df, tab_name):
     if tab_name == "Pitching":
         for c in ["ERA","IP","WHIP","BB/INN"]:
             if c in out.columns:
-                fmt_dict[c] = "{:.2f}"
+                fmt_dict[c] = _fmt_float(2)
         if "BA/RISP" in out.columns:
-            fmt_dict["BA/RISP"] = "{:.3f}"
+            fmt_dict["BA/RISP"] = _fmt_float(3)
 
     # Percent columns: already in percent units, just add percent sign
     for c in pct_cols:
-        fmt_dict.setdefault(c, "{:.2f}%")
+        fmt_dict.setdefault(c, _fmt_float(2, suffix="%"))
 
     # Int-like columns display as integers
     for c in int_like:
         if c in out.columns:
-            fmt_dict.setdefault(c, "{:.0f}")
+            fmt_dict.setdefault(c, _fmt_int)
 
     # Remaining numeric columns: 3 decimal places by default
     for c in out.columns:
@@ -768,11 +805,12 @@ def _format_cumulative(df, tab_name):
         if c in pct_cols:
             continue
         if pd.api.types.is_numeric_dtype(out[c]):
-            fmt_dict[c] = "{:.3f}"
+            fmt_dict[c] = _fmt_float(3)
 
     styler = styler.format(fmt_dict, na_rep="")
 
     return styler, {}
+
 
 
 
