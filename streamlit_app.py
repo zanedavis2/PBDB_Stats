@@ -441,41 +441,44 @@ def _append_totals(df, tab_name, source_mode):
     Series mode:
         Compute and append a Totals row at the bottom.
     Cumulative mode:
-        Use the existing TOTAL row (Last == 'TOTAL') and pin it to the bottom.
-        No recalculation for cumulative.
+        Do not compute anything.
+        Just move any existing team total row(s) to the bottom.
+        A team total row is any row whose Last name contains 'total' (case insensitive).
     """
     if df is None or df.empty:
         return df
 
     base = df.copy()
 
-    # ---------------------------------------------------
-    # CUMULATIVE MODE: only move existing TOTAL row
-    # ---------------------------------------------------
+    # ======================================================
+    # 1) CUMULATIVE MODE: only pin the existing total row
+    # ======================================================
     if source_mode == "Cumulative":
         if "Last" not in base.columns:
             return base
 
-        last_clean = base["Last"].astype(str).str.strip().str.upper()
-        mask_total = last_clean.eq("TOTAL")
+        # Treat anything that contains "total" as the total row
+        last_clean = base["Last"].astype(str).str.strip()
+        mask_total = last_clean.str.lower().str.contains("total")
 
+        # If no such row, just return
         if not mask_total.any():
-            return base  # no TOTAL row present
+            return base
 
-        non_total = base[~mask_total]
-        total_rows = base[mask_total]
+        body = base[~mask_total]
+        totals_rows = base[mask_total]
 
-        # Pin TOTAL to the bottom
-        return pd.concat([non_total, total_rows], ignore_index=True)
+        # Totals row(s) pinned to the bottom
+        return pd.concat([body, totals_rows], ignore_index=True)
 
-    # ---------------------------------------------------
-    # SERIES MODE: compute a fresh Totals row
-    # ---------------------------------------------------
+    # ======================================================
+    # 2) SERIES MODE: compute a fresh Totals row
+    # ======================================================
 
-    # Drop any existing totals rows
+    # Drop any existing totals rows so we do not double count
     if "Last" in base.columns:
         last_clean = base["Last"].astype(str).str.strip().str.lower()
-        base = base[~last_clean.isin(["total", "totals"])].reset_index(drop=True)
+        base = base[~last_clean.str.contains("total")].reset_index(drop=True)
 
     totals = {c: "" for c in base.columns}
     if "Last" in totals:
@@ -511,7 +514,7 @@ def _append_totals(df, tab_name, source_mode):
             if col in base.columns:
                 totals[col] = ssum(col)
 
-        # Rate stats
+        # Core rate stats
         totals["AVG"]     = round(H / AB, 3) if AB else 0
         totals["OBP"]     = round((H + BB + HBP) / (AB + BB + HBP + SF), 3) if (AB + BB + HBP + SF) else 0
         totals["SLG"]     = round(TB / AB, 3) if AB else 0
@@ -527,7 +530,7 @@ def _append_totals(df, tab_name, source_mode):
             totals["HHB"]  = ssum("HHB")
             totals["HHB%"] = round(totals["HHB"] / AB, 3) if AB else 0
 
-        # LD%, FB%, GB% specifically for series totals
+        # Explicitly fill LD%, FB%, GB% for series totals
         if "LD%" in base.columns:
             totals["LD%"] = round(smean("LD%"), 3)
         if "FB%" in base.columns:
@@ -535,12 +538,12 @@ def _append_totals(df, tab_name, source_mode):
         if "GB%" in base.columns:
             totals["GB%"] = round(smean("GB%"), 3)
 
-        # Any other percent-like columns not already set
+        # Any other % columns not already set
         for c in base.columns:
             if isinstance(c, str) and c.endswith("%") and c not in totals:
                 totals[c] = round(smean(c), 3)
 
-        # Fill any remaining numeric columns by sum
+        # Any remaining numeric columns: sum
         for c in base.columns:
             if c in ["Last", "First"] or c in totals:
                 continue
@@ -574,13 +577,11 @@ def _append_totals(df, tab_name, source_mode):
         totals["BAA"]    = round(Hh / (BF - BBh - HBP), 3) if (BF - BBh - HBP) > 0 else 0
         totals["BABIP"]  = round((Hh - HRh) / (BF - SOh - HRh - BBh - HBP), 3) if (BF - SOh - HRh - BBh - HBP) > 0 else 0
 
-        # Average visible percent columns
         pct_cols = [c for c in base.columns if isinstance(c, str) and c.endswith("%")]
         for c in pct_cols:
             col = pd.to_numeric(base[c], errors="coerce")
             totals[c] = round(col.mean(skipna=True), 2) if len(col.dropna()) else 0.0
 
-        # Other numeric columns as sums
         for c in base.columns:
             if c in ["Last", "First"] or c in totals:
                 continue
@@ -611,7 +612,7 @@ def _append_totals(df, tab_name, source_mode):
             totals["SB-ATT"] = f"{int(sb_sum)}-{int(att_sum)}"
             totals["CS%"] = round((att_sum - sb_sum) / att_sum * 100, 1) if att_sum else 0
 
-    # Final pass to fill any numeric columns not set yet
+    # Final fill for any remaining numeric columns not covered above
     for c in base.columns:
         if c in ["Last", "First"] or c in totals:
             continue
@@ -624,6 +625,7 @@ def _append_totals(df, tab_name, source_mode):
 
     totals_df = pd.DataFrame([totals]).reindex(columns=base.columns)
     return pd.concat([base, totals_df], ignore_index=True)
+
 
 def _pitching_ip_gt_zero(df):
     if "IP" not in df.columns: return df
