@@ -970,7 +970,8 @@ for tab_name, tab in zip(tabs_to_show, tabs):
         df_filtered = _drop_rows_nan_names(df_filtered)
 
         # Append totals row prior to formatting (same logic)
-        df_filtered = _append_totals(df_filtered, tab_name)
+        df_filtered = _append_totals(df_filtered, tab_name, source_mode)
+
 
         # Optional IP>0 guard for Pitching after user filtering (same as your code)
         if selected_players and tab_name == "Pitching":
