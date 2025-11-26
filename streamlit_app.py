@@ -580,236 +580,76 @@ def _pitching_ip_gt_zero(df):
 
 def _format_series(df, tab_name):
     """
-    SERIES VIEW formatter (aggregated series -> ratios for % need *100).
-    - Keep underlying data numeric for correct sorting/filtering.
-    - Scale % columns by 100 for display where appropriate.
-    - Use Styler.format with safe callables.
+    SERIES VIEW formatter
+    - Keep everything numeric so Streamlit sorting works
+    - For Hitting, % columns are ratios in [0,1], so scale to 0-100
+    - Round for readability, but never convert to strings
     """
     if df is None or df.empty:
         return df, {}
 
     out = df.copy()
 
-    # Helpers
-    def _dot3(x):
-        if x is None or (isinstance(x, str) and not x.strip()):
-            return ""
-        try:
-            v = float(str(x).replace(",", "").replace("%", ""))
-        except Exception:
-            return str(x)
-        s = f"{v:.3f}"
-        if 0 <= v < 1:
-            s = "." + s[2:]
-        elif -1 < v < 0:
-            s = "-." + s[3:]
-        return s
-
-    def _fmt_float(decimals, suffix=""):
-        fmt = f"{{:.{decimals}f}}"
-        def inner(x):
-            if x is None or (isinstance(x, str) and not x.strip()):
-                return ""
-            try:
-                v = float(str(x).replace(",", "").replace("%", ""))
-            except Exception:
-                return str(x)
-            return fmt.format(v) + suffix
-        return inner
-
-    def _fmt_int(x):
-        if x is None or (isinstance(x, str) and not x.strip()):
-            return ""
-        try:
-            v = float(str(x).replace(",", "").replace("%", ""))
-        except Exception:
-            return str(x)
-        return str(int(round(v)))
-
+    # columns that end with "%" are treated as percent metrics
     pct_cols = [c for c in out.columns if isinstance(c, str) and c.endswith("%")]
 
-    # Int-like columns per tab (stay numeric, display as ints)
-    int_like_by_tab = {
-        "Hitting":  ["PA","AB","H","R","RBI","BB","SO","2B","3B","HR","SB",
-                     "QAB","XBH","TB","2OUTRBI","H_RISP","AB_RISP","HHB"],
-        "Pitching": ["H","R","ER","BB","SO","HR","BBS","CS","SB","K-L","BF","#P","HBP",
-                     "GroundBalls","FlyBalls","LineDrives","HardHitBalls",
-                     "WeakContact","Under3Pitches","SwingMisses"],
-        "Fielding": ["TC","A","PO","E","DP"],
-        "Catching": ["INN","PB","CS"],
-    }
-    int_like = set(int_like_by_tab.get(tab_name, []))
-
-    # SERIES: percent columns stored as ratios for Hitting, so scale for display
+    # Hitting series: percent metrics stored as ratios -> convert to 0-100
     if tab_name == "Hitting":
         for c in pct_cols:
-            out[c] = pd.to_numeric(out[c], errors="coerce") * 100.0
+            out[c] = pd.to_numeric(out[c], errors="coerce")
+            out[c] = out[c] * 100
 
-    # Build Styler
-    styler = out.style
-
-    # Bold totals row
-    if "Last" in out.columns:
-        def _bold(row):
-            last_val = str(row.get("Last", "")).strip().lower()
-            if last_val in {"totals", "total"}:
-                return ["font-weight: bold" for _ in row]
-            return ["" for _ in row]
-        styler = styler.apply(_bold, axis=1)
-
-    fmt_dict = {}
-
-    # Hitting special rate formatting as .xxx
-    if tab_name == "Hitting":
-        for c in ["AVG","OBP","SLG","OPS","BABIP","BA/RISP","PS/PA"]:
-            if c in out.columns:
-                fmt_dict[c] = _dot3
-
-    # Pitching numeric formatting
-    if tab_name == "Pitching":
-        for c in ["ERA","IP","WHIP","BB/INN"]:
-            if c in out.columns:
-                fmt_dict[c] = _fmt_float(2)
-
-    # Catching special for CS% in Series: numeric with two decimals (no percent sign)
-    if tab_name == "Catching" and "CS%" in out.columns:
-        fmt_dict["CS%"] = _fmt_float(2)
-
-    # Percent columns overall
-    for c in pct_cols:
-        if tab_name == "Catching" and c == "CS%":
-            continue
-        fmt_dict.setdefault(c, _fmt_float(2, suffix="%"))
-
-    # Int-like columns display as integers
-    for c in int_like:
-        if c in out.columns:
-            fmt_dict.setdefault(c, _fmt_int)
-
-    # All other numeric columns: 3 decimal places
+    # numeric rounding for readability, keep dtype numeric
     for c in out.columns:
-        if c in fmt_dict:
-            continue
-        if c in pct_cols:
-            continue
         if pd.api.types.is_numeric_dtype(out[c]):
-            fmt_dict[c] = _fmt_float(3)
+            if c in pct_cols:
+                # percent-like columns: 2 decimals
+                out[c] = out[c].round(2)
+            elif tab_name == "Pitching" and c in ["ERA", "IP", "WHIP", "BB/INN"]:
+                out[c] = out[c].round(2)
+            else:
+                # everything else: 3 decimals
+                out[c] = out[c].round(3)
 
-    styler = styler.format(fmt_dict, na_rep="")
-
-    return styler, {}
+    # no styling, no strings
+    column_config = {}
+    return out, column_config
 
 
 
 def _format_cumulative(df, tab_name):
     """
-    CUMULATIVE VIEW formatter (cumulative.csv -> % already in percent units).
-    - Keep underlying data numeric for correct sorting/filtering.
-    - Do not rescale percent columns, only format them.
-    - Use Styler.format with safe callables.
+    CUMULATIVE VIEW formatter
+    - cumulative.csv already has % columns in percent units
+    - Keep everything numeric so Streamlit sorting works
+    - Only round, never convert to strings
     """
     if df is None or df.empty:
         return df, {}
 
     out = df.copy()
 
-    def _dot3(x):
-        if pd.isna(x):
-            return ""
-        try:
-            v = float(str(x).replace(",", "").replace("%", ""))
-        except Exception:
-            return str(x)
-        s = f"{v:.3f}"
-        if s.startswith("0."):
-            return "." + s[2:]
-        if s.startswith("-0."):
-            return "-." + s[3:]
-        return s
-
-    def _fmt_float(decimals, suffix=""):
-        fmt = f"{{:.{decimals}f}}"
-        def inner(x):
-            if x is None or (isinstance(x, str) and not x.strip()):
-                return ""
-            try:
-                v = float(str(x).replace(",", "").replace("%", ""))
-            except Exception:
-                return str(x)
-            return fmt.format(v) + suffix
-        return inner
-
-    def _fmt_int(x):
-        if x is None or (isinstance(x, str) and not x.strip()):
-            return ""
-        try:
-            v = float(str(x).replace(",", "").replace("%", ""))
-        except Exception:
-            return str(x)
-        return str(int(round(v)))
-
     pct_cols = [c for c in out.columns if isinstance(c, str) and c.endswith("%")]
 
-    int_like_by_tab = {
-        "Hitting":  ["PA","AB","H","R","RBI","BB","SO","2B","3B","HR","SB",
-                     "QAB","XBH","TB","2OUTRBI","H_RISP","AB_RISP","HHB"],
-        "Pitching": ["H","R","ER","BB","SO","HR","BBS","CS","SB","K-L","BF","#P","HBP",
-                     "GroundBalls","FlyBalls","LineDrives","HardHitBalls",
-                     "WeakContact","Under3Pitches","SwingMisses"],
-        "Fielding": ["TC","A","PO","E","DP"],
-        "Catching": ["INN","PB","CS"],
-    }
-    int_like = set(int_like_by_tab.get(tab_name, []))
-
-    # Build Styler
-    styler = out.style
-
-    # Bold totals row
-    if "Last" in out.columns:
-        def _bold(row):
-            last_val = str(row.get("Last", "")).strip().lower()
-            if last_val in {"totals", "total"}:
-                return ["font-weight: bold" for _ in row]
-            return ["" for _ in row]
-        styler = styler.apply(_bold, axis=1)
-
-    fmt_dict = {}
-
-    # Hitting rate columns as .xxx
-    if tab_name == "Hitting":
-        for c in ["AVG","OBP","SLG","OPS","BABIP","BA/RISP","PS/PA"]:
-            if c in out.columns:
-                fmt_dict[c] = _dot3
-
-    # Pitching key numeric formats
-    if tab_name == "Pitching":
-        for c in ["ERA","IP","WHIP","BB/INN"]:
-            if c in out.columns:
-                fmt_dict[c] = _fmt_float(2)
-        if "BA/RISP" in out.columns:
-            fmt_dict["BA/RISP"] = _fmt_float(3)
-
-    # Percent columns: already in percent units, just add percent sign
-    for c in pct_cols:
-        fmt_dict.setdefault(c, _fmt_float(2, suffix="%"))
-
-    # Int-like columns display as integers
-    for c in int_like:
-        if c in out.columns:
-            fmt_dict.setdefault(c, _fmt_int)
-
-    # Remaining numeric columns: 3 decimal places by default
+    # ensure numeric where possible
     for c in out.columns:
-        if c in fmt_dict:
-            continue
-        if c in pct_cols:
-            continue
+        if c in pct_cols or pd.api.types.is_numeric_dtype(out[c]):
+            out[c] = pd.to_numeric(out[c], errors="coerce")
+
+    # rounding
+    for c in out.columns:
         if pd.api.types.is_numeric_dtype(out[c]):
-            fmt_dict[c] = _fmt_float(3)
+            if c in pct_cols:
+                out[c] = out[c].round(2)
+            elif tab_name == "Pitching" and c in ["ERA", "IP", "WHIP", "BB/INN"]:
+                out[c] = out[c].round(2)
+            elif tab_name == "Pitching" and c == "BA/RISP":
+                out[c] = out[c].round(3)
+            else:
+                out[c] = out[c].round(3)
 
-    styler = styler.format(fmt_dict, na_rep="")
-
-    return styler, {}
+    column_config = {}
+    return out, column_config
 
 
 
