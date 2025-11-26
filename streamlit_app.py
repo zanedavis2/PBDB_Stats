@@ -436,29 +436,37 @@ def _drop_rows_nan_names(df):
     if not cols: return df
     return df.dropna(subset=cols, how="all").reset_index(drop=True)
 
-def _append_totals(df, tab_name, source_mode):
+def _append_totals(df, source_mode):
     """
-    Series:
-        append a computed Totals row at the bottom.
-    Cumulative:
-        do not compute, just move Last == 'TOTAL' row(s) to the bottom.
+    Series mode:
+        Append a totals row using numeric column sums.
+    Cumulative mode:
+        Find existing TOTAL row and move it to the bottom.
     """
     if df is None or df.empty:
         return df
 
     base = df.copy()
 
-    # 1) CUMULATIVE MODE: just pin LAST == 'TOTAL' to bottom
+    # Ensure Last exists
+    if "Last" not in base.columns:
+        return base
+
+    # ------------------------------
+    # 1. CUMULATIVE MODE
+    # ------------------------------
     if source_mode == "Cumulative":
-        if "Last" not in base.columns:
-            return base
-        last_clean = base["Last"].astype(str).str.strip()
-        mask = last_clean.str.upper().eq("TOTAL")
+        last_clean = base["Last"].astype(str).str.strip().str.upper()
+        mask = last_clean.eq("TOTAL")
+
         if not mask.any():
-            return base
+            return base  # nothing to move
+
         non_total = base[~mask]
-        total_rows = base[mask]
-        return pd.concat([non_total, total_rows], ignore_index=True)
+        total_row = base[mask]
+
+        # final DF with TOTAL guaranteed last
+        return pd.concat([non_total, total_row], ignore_index=True)
 
     # 2) SERIES MODE: compute totals row
     # Remove any existing totals rows
