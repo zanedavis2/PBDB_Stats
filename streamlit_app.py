@@ -459,7 +459,7 @@ def _append_totals(df, tab_name, source_mode):
 
         # Treat anything that contains "total" as the total row
         last_clean = base["Last"].astype(str).str.strip()
-        mask_total = last_clean.str.lower().str.contains("total")
+        mask_total = last_clean.str.lower().str.contains("team")
 
         # If no such row, just return
         if not mask_total.any():
