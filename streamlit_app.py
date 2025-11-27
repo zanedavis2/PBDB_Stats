@@ -490,14 +490,13 @@ def _append_totals(df, tab_name, source_mode):
         v = _as_num(base[col]).dropna()
         return float(v.mean()) if len(v) else 0.0
 
-    # ---------------- HITTING TOTALS ----------------
+        # ---------------- HITTING TOTALS ----------------
     if tab_name == "Hitting":
         PA, AB, H = ssum("PA"), ssum("AB"), ssum("H")
         BB, HBP, SF = ssum("BB"), ssum("HBP"), ssum("SF")
         TB, R, RBI, SO = ssum("TB"), ssum("R"), ssum("RBI"), ssum("SO")
         HR, QAB, PS = ssum("HR"), ssum("QAB"), ssum("PS")
         AB_RISP, H_RISP = ssum("AB_RISP"), ssum("H_RISP")
-        
 
         raw_cols = [
             "PA","AB","H","BB","HBP","SF","TB","R","RBI","SO",
@@ -507,11 +506,8 @@ def _append_totals(df, tab_name, source_mode):
             if col in base.columns:
                 totals[col] = ssum(col)
 
-
-        
-        # Core rate stats
         totals["AVG"]     = round(H / AB, 3) if AB else 0
-        totals["OBP"]     = round((H + BB + HBP) / (PA), 3) if (PA) else 0
+        totals["OBP"]     = round((H + BB + HBP) / PA, 3) if PA else 0
         totals["SLG"]     = round(TB / AB, 3) if AB else 0
         totals["OPS"]     = round(totals["OBP"] + totals["SLG"], 3)
         totals["QAB%"]    = round(QAB / PA, 3) if PA else 0
@@ -525,20 +521,33 @@ def _append_totals(df, tab_name, source_mode):
             totals["HHB"]  = ssum("HHB")
             totals["HHB%"] = round(totals["HHB"] / AB, 3) if AB else 0
 
-        # Explicitly fill LD%, FB%, GB% for series totals
-        if "LD%" in base.columns:
-            totals["LD%"] = round(smean("LD%"), 3)
-        if "FB%" in base.columns:
-            totals["FB%"] = round(smean("FB%"), 3)
-        if "GB%" in base.columns:
-            totals["GB%"] = round(smean("GB%"), 3)
+        # ----------------------------
+        # LD, FB, GB recalc from percentages
+        # ----------------------------
+        balls_in_play = AB - SO - HR + SF
 
-        # Any other % columns not already set
-        for c in base.columns:
-            if isinstance(c, str) and c.endswith("%") and c not in totals:
-                totals[c] = round(smean(c), 3)
+        if all(col in base.columns for col in ["LD%", "FB%", "GB%"]):
+            LD_raw = round(smean("LD%") * balls_in_play) if balls_in_play > 0 else 0
+            FB_raw = round(smean("FB%") * balls_in_play) if balls_in_play > 0 else 0
+            GB_raw = round(smean("GB%") * balls_in_play) if balls_in_play > 0 else 0
 
-        # Any remaining numeric columns: sum
+            totals["LD"] = LD_raw
+            totals["FB"] = FB_raw
+            totals["GB"] = GB_raw
+
+            totals["LD%"] = round(LD_raw / balls_in_play, 3) if balls_in_play else 0
+            totals["FB%"] = round(FB_raw / balls_in_play, 3) if balls_in_play else 0
+            totals["GB%"] = round(GB_raw / balls_in_play, 3) if balls_in_play else 0
+
+        else:
+            if "LD%" in base.columns:
+                totals["LD%"] = round(smean("LD%"), 3)
+            if "FB%" in base.columns:
+                totals["FB%"] = round(smean("FB%"), 3)
+            if "GB%" in base.columns:
+                totals["GB%"] = round(smean("GB%"), 3)
+
+        # Catch any numeric columns not already set
         for c in base.columns:
             if c in ["Last", "First"] or c in totals:
                 continue
