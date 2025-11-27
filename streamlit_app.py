@@ -437,47 +437,31 @@ def _drop_rows_nan_names(df):
     return df.dropna(subset=cols, how="all").reset_index(drop=True)
 
 def _append_totals(df, tab_name, source_mode):
-    """
-    Series mode:
-        Compute and append a Totals row at the bottom.
-    Cumulative mode:
-        Do not compute anything.
-        Just move any existing team total row(s) to the bottom.
-        Bold them.
-    """
     if df is None or df.empty:
         return df
 
     base = df.copy()
 
-    # ======================================================
-    # 1) CUMULATIVE MODE: pin AND bold the existing total row
-    # ======================================================
+    # ===========================================================
+    # CUMULATIVE MODE
+    # Just move the "TOTAL" row (Last name) to the bottom
+    # ===========================================================
     if source_mode == "Cumulative":
         if "Last" not in base.columns:
             return base
 
-        # Identify team total row(s)
-        last_clean = base["Last"].astype(str).str.strip()
-        mask_total = last_clean.str.lower().str.contains("team")
+        last_series = base["Last"].astype(str).str.strip()
+        mask = last_series.str.upper().eq("TOTAL")
 
-        # No total rows -> return unchanged
-        if not mask_total.any():
+        if not mask.any():
+            # Nothing labeled TOTAL, just return as is
             return base
 
-        # Pin totals to the bottom
-        body = base[~mask_total]
-        totals_rows = base[mask_total]
-        combined = pd.concat([body, totals_rows], ignore_index=True)
+        totals_rows = base[mask]
+        non_totals = base[~mask]
 
-        # Bold them
-        def bold_totals(row):
-            last_val = str(row.get("Last", "")).lower()
-            if "team" in last_val:
-                return ["font-weight: bold"] * len(row)
-            return [""] * len(row)
-
-        return combined.style.apply(bold_totals, axis=1)
+        # Pin TOTAL row to the end
+        return pd.concat([non_totals, totals_rows], ignore_index=True)
 
     # ======================================================
     # 2) SERIES MODE: compute a fresh Totals row
