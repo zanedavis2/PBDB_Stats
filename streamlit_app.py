@@ -737,8 +737,11 @@ def _format_series(df, tab_name):
     # Bold totals row
     if "Last" in out.columns:
         def _bold(row):
-            return ["font-weight: bold" if str(row.get("Last","")).strip().lower() in {"team","total"} else "" for _ in row]
-        out = out.style.apply(_bold, axis=1)
+            last = str(row.get("Last","")).strip().lower()
+            if "team" in last:
+                return ["font-weight: bold"] * len(row)
+            return [""] * len(row)
+
 
     return out, {}
 
