@@ -484,7 +484,7 @@ def _append_totals(df, tab_name, source_mode):
     if "Last" in totals:
         totals["Last"] = "Team"
     if "First" in totals:
-        totals["First"] = "Totals"
+        totals["First"] = "Total"
 
     def _as_num(s):
         return pd.to_numeric(s, errors="coerce")
