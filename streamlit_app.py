@@ -437,39 +437,39 @@ def _drop_rows_nan_names(df):
     return df.dropna(subset=cols, how="all").reset_index(drop=True)
 
 def _append_totals(df, tab_name, source_mode):
-    """
-    Series mode:
-        Compute and append a Totals row at the bottom.
-    Cumulative mode:
-        Do not compute anything.
-        Just move any existing team total row(s) to the bottom.
-        A team total row is any row whose Last name contains 'total' (case insensitive).
-    """
     if df is None or df.empty:
         return df
 
     base = df.copy()
 
     # ======================================================
-    # 1) CUMULATIVE MODE: only pin the existing total row
+    # 1) CUMULATIVE MODE: pin AND bold the existing total row
     # ======================================================
     if source_mode == "Cumulative":
         if "Last" not in base.columns:
             return base
 
-        # Treat anything that contains "total" as the total row
+        # Identify team total row(s)
         last_clean = base["Last"].astype(str).str.strip()
         mask_total = last_clean.str.lower().str.contains("team")
 
-        # If no such row, just return
+        # No total rows -> return unchanged
         if not mask_total.any():
             return base
 
+        # Pin totals to the bottom
         body = base[~mask_total]
         totals_rows = base[mask_total]
+        combined = pd.concat([body, totals_rows], ignore_index=True)
 
-        # Totals row(s) pinned to the bottom
-        return pd.concat([body, totals_rows], ignore_index=True)
+        # Bold them
+        def bold_totals(row):
+            last_val = str(row.get("Last", "")).lower()
+            if "team" in last_val:
+                return ["font-weight: bold"] * len(row)
+            return [""] * len(row)
+
+        return combined.style.apply(bold_totals, axis=1)
 
     # ======================================================
     # 2) SERIES MODE: compute a fresh Totals row
@@ -505,6 +505,7 @@ def _append_totals(df, tab_name, source_mode):
         TB, R, RBI, SO = ssum("TB"), ssum("R"), ssum("RBI"), ssum("SO")
         HR, QAB, PS = ssum("HR"), ssum("QAB"), ssum("PS")
         AB_RISP, H_RISP = ssum("AB_RISP"), ssum("H_RISP")
+        
 
         raw_cols = [
             "PA","AB","H","BB","HBP","SF","TB","R","RBI","SO",
@@ -514,9 +515,11 @@ def _append_totals(df, tab_name, source_mode):
             if col in base.columns:
                 totals[col] = ssum(col)
 
+
+        
         # Core rate stats
         totals["AVG"]     = round(H / AB, 3) if AB else 0
-        totals["OBP"]     = round((H + BB + HBP) / (AB + BB + HBP + SF), 3) if (AB + BB + HBP + SF) else 0
+        totals["OBP"]     = round((H + BB + HBP) / (PA), 3) if (PA) else 0
         totals["SLG"]     = round(TB / AB, 3) if AB else 0
         totals["OPS"]     = round(totals["OBP"] + totals["SLG"], 3)
         totals["QAB%"]    = round(QAB / PA, 3) if PA else 0
