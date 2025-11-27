@@ -437,6 +437,16 @@ def _drop_rows_nan_names(df):
     return df.dropna(subset=cols, how="all").reset_index(drop=True)
 
 def _append_totals(df, tab_name, source_mode):
+    """
+    Series mode:
+        Compute and append a Totals row at the bottom.
+    Cumulative mode:
+        Do not compute anything.
+        Just move any existing team total row(s) to the bottom.
+        Bold them.
+    """
+    if df is None or df.empty:
+        return df
 
     base = df.copy()
 
