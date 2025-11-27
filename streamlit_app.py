@@ -482,9 +482,9 @@ def _append_totals(df, tab_name, source_mode):
 
     totals = {c: "" for c in base.columns}
     if "Last" in totals:
-        totals["Last"] = "Totals"
+        totals["Last"] = "Team"
     if "First" in totals:
-        totals["First"] = ""
+        totals["First"] = "Totals"
 
     def _as_num(s):
         return pd.to_numeric(s, errors="coerce")
@@ -737,7 +737,7 @@ def _format_series(df, tab_name):
     # Bold totals row
     if "Last" in out.columns:
         def _bold(row):
-            return ["font-weight: bold" if str(row.get("Last","")).strip().lower() in {"totals","total"} else "" for _ in row]
+            return ["font-weight: bold" if str(row.get("Last","")).strip().lower() in {"team","total"} else "" for _ in row]
         out = out.style.apply(_bold, axis=1)
 
     return out, {}
