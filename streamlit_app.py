@@ -451,7 +451,7 @@ def _append_totals(df, tab_name, source_mode):
             return base
 
         last_series = base["Last"].astype(str).str.strip()
-        mask = last_series.str.upper().eq("TOTAL")
+        mask = last_series.str.eq("team")
 
         if not mask.any():
             # Nothing labeled TOTAL, just return as is
