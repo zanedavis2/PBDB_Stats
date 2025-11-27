@@ -437,8 +437,6 @@ def _drop_rows_nan_names(df):
     return df.dropna(subset=cols, how="all").reset_index(drop=True)
 
 def _append_totals(df, tab_name, source_mode):
-    if df is None or df.empty:
-        return df
 
     base = df.copy()
 
