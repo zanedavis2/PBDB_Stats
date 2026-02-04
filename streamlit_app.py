@@ -338,13 +338,33 @@ with st.sidebar:
         if regular_series:
             # Extract unique values from regular series only
             years = sorted(set([s["year"] for s in regular_series]), reverse=True)
-            seasons = sorted(set([s["season"] for s in regular_series]))
+            all_seasons = sorted(set([s["season"] for s in regular_series]))
+            
+            # Default to most recent year
+            default_year = years[0] if years else "All"
             
             # Year filter
-            selected_year = st.selectbox("Year", ["All"] + years, index=0)
+            year_options = ["All"] + years
+            year_index = year_options.index(default_year) if default_year in year_options else 0
+            selected_year = st.selectbox("Year", year_options, index=year_index)
+            
+            # Filter by selected year to get available seasons
+            year_filtered = regular_series if selected_year == "All" else [s for s in regular_series if s["year"] == selected_year]
+            available_seasons = sorted(set([s["season"] for s in year_filtered]))
+            
+            # Default to most recent season for the selected year
+            season_order = {"Fall": 1, "Spring": 2, "Summer": 3}
+            if available_seasons and selected_year != "All":
+                # For a specific year, default to the latest season available
+                available_seasons_sorted = sorted(available_seasons, key=lambda x: -season_order.get(x, 0))
+                default_season = available_seasons_sorted[0]
+            else:
+                default_season = "All"
             
             # Season filter
-            selected_season = st.selectbox("Season", ["All"] + seasons, index=0)
+            season_options = ["All"] + available_seasons
+            season_index = season_options.index(default_season) if default_season in season_options else 0
+            selected_season = st.selectbox("Season", season_options, index=season_index)
             
             # Filter series based on year and season
             filtered_series = regular_series
@@ -353,7 +373,7 @@ with st.sidebar:
             if selected_season != "All":
                 filtered_series = [s for s in filtered_series if s["season"] == selected_season]
             
-            # Opponent filter
+            # Opponent filter (alphabetically sorted, default to first)
             opponents = sorted(set([s["opponent"] for s in filtered_series]))
             
             if opponents:
