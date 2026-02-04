@@ -144,7 +144,7 @@ def prepare_catching_stats(df: pd.DataFrame) -> pd.DataFrame:
 def parse_series_filename(filename):
     """Parse series filename to extract opponent, season, and year.
     Format: [Opponent]_[Season]_[Year].csv
-    Example: Wake_Fall_2025.csv
+    Example: Wake_Fall_2025.csv or Cumulative_Fall_2025.csv
     """
     basename = os.path.splitext(filename)[0]
     parts = basename.split("_")
@@ -153,19 +153,44 @@ def parse_series_filename(filename):
         opponent = parts[0]
         season = parts[1]
         year = parts[2]
-        return {"opponent": opponent, "season": season, "year": year, "filename": filename}
+        is_cumulative = opponent.lower() == "cumulative"
+        return {
+            "opponent": opponent,
+            "season": season,
+            "year": year,
+            "filename": filename,
+            "is_cumulative": is_cumulative
+        }
     return None
 
 def list_series_files():
-    """List all CSV files except cumulative.csv and parse their metadata."""
+    """List all CSV files and parse their metadata."""
     series_files = []
     for filepath in glob.glob("*.csv"):
         basename = os.path.basename(filepath)
-        if basename.lower() != "cumulative.csv":
-            parsed = parse_series_filename(basename)
-            if parsed:
-                series_files.append(parsed)
+        parsed = parse_series_filename(basename)
+        if parsed:
+            series_files.append(parsed)
     return series_files
+
+def get_most_recent_cumulative(series_files):
+    """Find the most recent cumulative file based on year and season order."""
+    cumulative_files = [s for s in series_files if s.get("is_cumulative", False)]
+    
+    if not cumulative_files:
+        return None
+    
+    # Define season order (Spring comes after Fall in academic year)
+    season_order = {"Fall": 1, "Spring": 2, "Summer": 3}
+    
+    # Sort by year (descending) then by season
+    def sort_key(s):
+        year_val = int(s["year"]) if s["year"].isdigit() else 0
+        season_val = season_order.get(s["season"], 0)
+        return (-year_val, -season_val)
+    
+    cumulative_files.sort(key=sort_key)
+    return cumulative_files[0]
 
 def load_csv(filename):
     """Load a CSV file and return cleaned dataframe."""
@@ -234,6 +259,20 @@ def format_dataframe(df, stat_type):
     
     return out
 
+def extract_all_players(frames):
+    """Extract all unique player last names from all stat frames."""
+    names = set()
+    for df in frames.values():
+        if df is not None and not df.empty and "Last" in df.columns:
+            names.update(df["Last"].dropna().astype(str))
+    return sorted(names)
+
+def filter_players(df, selected_lastnames):
+    """Filter dataframe by selected player last names."""
+    if not selected_lastnames or "Last" not in df.columns:
+        return df
+    return df[df["Last"].isin(selected_lastnames)].copy()
+
 # Streamlit App
 st.set_page_config(page_title="EUCB Stats", layout="wide")
 st.title("EUCB Baseball Stats")
@@ -245,35 +284,93 @@ with st.sidebar:
     # Get all series files
     series_files = list_series_files()
     
-    if series_files:
-        # Extract unique values
-        years = sorted(set([s["year"] for s in series_files]), reverse=True)
-        seasons = sorted(set([s["season"] for s in series_files]))
-        
-        # Year filter
-        selected_year = st.selectbox("Year", ["All"] + years, index=0)
-        
-        # Season filter
-        selected_season = st.selectbox("Season", ["All"] + seasons, index=0)
-        
-        # Filter series based on year and season
-        filtered_series = series_files
-        if selected_year != "All":
-            filtered_series = [s for s in filtered_series if s["year"] == selected_year]
-        if selected_season != "All":
-            filtered_series = [s for s in filtered_series if s["season"] == selected_season]
-        
-        # Opponent filter
-        opponents = sorted(set([s["opponent"] for s in filtered_series]))
-        
-        if opponents:
-            selected_opponent = st.selectbox("Opponent", ["Cumulative"] + opponents, index=0)
+    if not series_files:
+        st.error("No CSV files found.")
+        st.stop()
+    
+    # Separate cumulative and regular series
+    cumulative_files = [s for s in series_files if s.get("is_cumulative", False)]
+    regular_series = [s for s in series_files if not s.get("is_cumulative", False)]
+    
+    # Get most recent cumulative
+    most_recent_cumulative = get_most_recent_cumulative(series_files)
+    
+    # Series type selection
+    series_type = st.radio(
+        "View Type",
+        ["Cumulative Stats", "Individual Series"],
+        index=0,
+        help="Choose between cumulative season stats or individual series"
+    )
+    
+    if series_type == "Cumulative Stats":
+        if cumulative_files:
+            # Create display names for cumulative files
+            cumulative_options = []
+            cumulative_map = {}
+            for cf in cumulative_files:
+                display = f"{cf['season']} {cf['year']}"
+                cumulative_options.append(display)
+                cumulative_map[display] = cf
+            
+            # Sort options by year/season (most recent first)
+            season_order = {"Fall": 1, "Spring": 2, "Summer": 3}
+            cumulative_options.sort(
+                key=lambda x: (-int(cumulative_map[x]['year']), -season_order.get(cumulative_map[x]['season'], 0))
+            )
+            
+            # Default to most recent
+            default_display = f"{most_recent_cumulative['season']} {most_recent_cumulative['year']}" if most_recent_cumulative else cumulative_options[0]
+            default_index = cumulative_options.index(default_display) if default_display in cumulative_options else 0
+            
+            selected_cumulative = st.selectbox(
+                "Select Cumulative Period",
+                cumulative_options,
+                index=default_index
+            )
+            
+            selected_file = cumulative_map[selected_cumulative]
         else:
-            selected_opponent = "Cumulative"
-            st.info("No series match the selected filters.")
-    else:
-        selected_opponent = "Cumulative"
-        st.info("No series files found. Showing cumulative stats only.")
+            st.error("No cumulative files found. Please add files named 'Cumulative_[Season]_[Year].csv'")
+            st.stop()
+    
+    else:  # Individual Series
+        if regular_series:
+            # Extract unique values from regular series only
+            years = sorted(set([s["year"] for s in regular_series]), reverse=True)
+            seasons = sorted(set([s["season"] for s in regular_series]))
+            
+            # Year filter
+            selected_year = st.selectbox("Year", ["All"] + years, index=0)
+            
+            # Season filter
+            selected_season = st.selectbox("Season", ["All"] + seasons, index=0)
+            
+            # Filter series based on year and season
+            filtered_series = regular_series
+            if selected_year != "All":
+                filtered_series = [s for s in filtered_series if s["year"] == selected_year]
+            if selected_season != "All":
+                filtered_series = [s for s in filtered_series if s["season"] == selected_season]
+            
+            # Opponent filter
+            opponents = sorted(set([s["opponent"] for s in filtered_series]))
+            
+            if opponents:
+                selected_opponent = st.selectbox("Opponent", opponents, index=0)
+                # Find the matching series file
+                matching = [s for s in filtered_series if s["opponent"] == selected_opponent]
+                if matching:
+                    selected_file = matching[0]
+                else:
+                    st.error("Could not find matching series file.")
+                    st.stop()
+            else:
+                st.info("No series match the selected filters.")
+                st.stop()
+        else:
+            st.error("No individual series files found.")
+            st.stop()
     
     st.divider()
     
@@ -286,22 +383,14 @@ with st.sidebar:
     )
 
 # Load data based on selection
-if selected_opponent == "Cumulative":
-    st.subheader("Cumulative Season Stats")
-    raw_df = load_csv("cumulative.csv")
-    display_name = "Cumulative (Season Total)"
+if series_type == "Cumulative Stats":
+    st.subheader(f"Cumulative Stats - {selected_file['season']} {selected_file['year']}")
+    raw_df = load_csv(selected_file['filename'])
+    display_name = f"Cumulative ({selected_file['season']} {selected_file['year']})"
 else:
-    # Find the matching series file
-    matching = [s for s in filtered_series if s["opponent"] == selected_opponent]
-    if matching:
-        series_info = matching[0]
-        filename = series_info["filename"]
-        st.subheader(f"{series_info['opponent']} - {series_info['season']} {series_info['year']}")
-        raw_df = load_csv(filename)
-        display_name = f"{series_info['opponent']} ({series_info['season']} {series_info['year']})"
-    else:
-        st.error("Could not find matching series file.")
-        st.stop()
+    st.subheader(f"{selected_file['opponent']} - {selected_file['season']} {selected_file['year']}")
+    raw_df = load_csv(selected_file['filename'])
+    display_name = f"{selected_file['opponent']} ({selected_file['season']} {selected_file['year']})"
 
 # Check if data loaded successfully
 if raw_df.empty:
@@ -310,6 +399,16 @@ if raw_df.empty:
 
 # Get stat frames
 frames = get_stat_frames(raw_df, stat_types if stat_types else STAT_TYPES_ALL)
+
+# Extract all player names for filtering
+all_player_lastnames = extract_all_players(frames)
+
+# Player filter
+selected_players = st.multiselect(
+    "Filter by player (Last name); leave empty for All",
+    options=all_player_lastnames,
+    default=[],
+)
 
 # Display tabs
 if not stat_types:
@@ -326,8 +425,15 @@ for tab_name, tab in zip(stat_types, tabs):
             st.info(f"No data available for {tab_name}.")
             continue
         
+        # Apply player filter
+        df_filtered = filter_players(df, selected_players)
+        
+        if df_filtered.empty:
+            st.warning(f"No {tab_name} data matches the selected player(s).")
+            continue
+        
         # Format for display
-        df_display = format_dataframe(df, tab_name)
+        df_display = format_dataframe(df_filtered, tab_name)
         
         st.dataframe(
             df_display,
