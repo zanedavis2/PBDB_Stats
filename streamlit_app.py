@@ -10,12 +10,12 @@ QUAL_MINS = {"Hitting": 1, "Pitching": 0.1, "Fielding": 1, "Catching": 0.1}
 
 HITTING_KEY = pd.DataFrame({
     "Acronym": [
-        "PA","AB","H","AVG","OBP","SLG","OPS","RBI","R","BB","SO","XBH","2B","3B","HR","TB","SB",
+        "PA","AB","H","AVG","OBP","SLG","OPS","RBI","R","BB","HBP","SO","XBH","2B","3B","HR","TB","SB",
         "PS/PA","BB/K","C%","QAB","QAB%","HHB","HHB %","LD%","FB%","GB%","BABIP","BA/RISP","2OUTRBI"
     ],
     "Meaning": [
         "Plate Appearances","At-Bats","Hits","Batting Average","On-Base Percentage","Slugging Percentage",
-        "On-base Plus Slugging","Runs Batted In","Runs Scored","Walks","Strikeouts","Extra-Base Hits",
+        "On-base Plus Slugging","Runs Batted In","Runs Scored","Walks","Hit By Pitch","Strikeouts","Extra-Base Hits",
         "Doubles","Triples","Home Runs","Total Bases","Stolen Bases","Pitches per Plate Appearance",
         "Walk-to-Strikeout Ratio","Contact Percentage","Quality At-Bats","Quality At-Bat Percentage",
         "Hard-Hit Balls","Hard-Hit Ball Percentage","Line Drive %","Fly Ball %","Ground Ball %",
@@ -71,7 +71,7 @@ def prepare_batting_stats(df: pd.DataFrame) -> pd.DataFrame:
     """Prepare hitting stats dataframe."""
     df = df.copy()
     cols = [
-        "Last","First","PA","AB","H","AVG","OBP","SLG","OPS","RBI","R","BB","SO","XBH","2B","3B","HR",
+        "Last","First","PA","AB","H","AVG","OBP","SLG","OPS","RBI","R","BB","HBP","SO","XBH","2B","3B","HR",
         "TB","SB","PS/PA","BB/K","C%","QAB","QAB%","HHB","HHB %","LD%","FB%","GB%","BABIP","BA/RISP","2OUTRBI",
     ]
     df = df[[c for c in cols if c in df.columns]].copy()
